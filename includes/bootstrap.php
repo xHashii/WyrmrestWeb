@@ -1,6 +1,31 @@
 <?php
 session_start();
 $config = require __DIR__ . '/../config.php';
+require_once __DIR__ . '/itemdb.php';
+
+/**
+ * Every database call in here is written to fail softly — a missing table or
+ * a missing GRANT must never blank out a page. The trade-off is that the real
+ * reason then disappears, which is exactly how "Character not found" used to
+ * hide a permission error on `auth`.`account_access`. So instead of throwing
+ * the message away, record it: armory-diagnostics.php prints the whole list,
+ * and pages show it inline when 'debug' is enabled in config.php.
+ */
+function dbNoteError(string $context, \Throwable $e): void
+{
+    $GLOBALS['__db_errors'][] = [
+        'context' => $context,
+        'message' => $e->getMessage(),
+    ];
+}
+
+/**
+ * All database problems hit while rendering the current page.
+ */
+function dbErrors(): array
+{
+    return $GLOBALS['__db_errors'] ?? [];
+}
 
 /**
  * Send a console command to the worldserver over its SOAP interface
@@ -53,23 +78,36 @@ function getServerStatus(array $config): array
 
 /**
  * Open a connection to the `characters` database. Returns null (never
- * throws) if it's not configured or not reachable.
+ * throws) if it's not configured or not reachable. The handle is reused for
+ * the rest of the request — a single page can ask for it a dozen times.
  */
 function connectCharactersDb(array $config): ?PDO
 {
+    static $pdo = null;
+    static $attempted = false;
+
+    if ($attempted) {
+        return $pdo;
+    }
+    $attempted = true;
+
     if (empty($config['db_host'])) {
         return null;
     }
 
     try {
         $dsn = "mysql:host={$config['db_host']};port={$config['db_port']};dbname={$config['db_name']};charset=utf8mb4";
-        return new PDO($dsn, $config['db_user'], $config['db_pass'], [
+        $pdo = new PDO($dsn, $config['db_user'], $config['db_pass'], [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_TIMEOUT => 2,
+            PDO::ATTR_TIMEOUT => 3,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
     } catch (\Throwable $e) {
-        return null;
+        $pdo = null;
+        dbNoteError("connect to `{$config['db_name']}` at {$config['db_host']}:{$config['db_port']}", $e);
     }
+
+    return $pdo;
 }
 
 /**
@@ -129,6 +167,7 @@ function mapCharacterRow(array $row): array
     $gender  = (int) $row['gender'] === 1 ? 1 : 0;
 
     $mapped = [
+        'guid'       => isset($row['guid']) ? (int) $row['guid'] : null,
         'name'       => $row['name'],
         'level'      => (int) $row['level'],
         'race_name'  => raceName($raceId),
@@ -159,9 +198,10 @@ function getOnlinePlayers(array $config): array
     }
 
     try {
-        $stmt = $pdo->query('SELECT name, level, race, class, gender, zone FROM characters WHERE online = 1 ORDER BY level DESC LIMIT 500');
+        $stmt = $pdo->query('SELECT guid, name, level, race, class, gender, zone FROM characters WHERE online = 1 ORDER BY level DESC LIMIT 500');
         return array_map('mapCharacterRow', $stmt->fetchAll(PDO::FETCH_ASSOC));
     } catch (\Throwable $e) {
+        dbNoteError('read online characters', $e);
         return [];
     }
 }
@@ -178,11 +218,12 @@ function getTopCharacters(array $config, int $limit = 10): array
     }
 
     try {
-        $stmt = $pdo->prepare('SELECT name, level, race, class, gender FROM characters ORDER BY level DESC, totaltime DESC LIMIT :limit');
+        $stmt = $pdo->prepare('SELECT guid, name, level, race, class, gender FROM characters ORDER BY level DESC, totaltime DESC LIMIT :limit');
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
         return array_map('mapCharacterRow', $stmt->fetchAll(PDO::FETCH_ASSOC));
     } catch (\Throwable $e) {
+        dbNoteError('read top characters', $e);
         return [];
     }
 }
@@ -202,6 +243,7 @@ function getTotalCharacterCount(array $config): ?int
     try {
         return (int) $pdo->query('SELECT COUNT(*) FROM characters')->fetchColumn();
     } catch (\Throwable $e) {
+        dbNoteError('count characters', $e);
         return null;
     }
 }
@@ -223,23 +265,39 @@ function getOnlineClassBreakdown(array $config): array
         $rows = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
         return array_map('intval', $rows);
     } catch (\Throwable $e) {
+        dbNoteError('read online class breakdown', $e);
         return [];
     }
 }
 
 /* ============================================================
- * Armory: character/guild lookup, ported from the Node.js/
- * AzerothCore Armory app to native PHP against this same DB
- * connection. Covers character summary + equipped gear, and
- * guild roster. Does NOT cover: talents, glyphs, achievements,
- * PvP/arena, transmog, or item tooltips/icons (no item icon
- * images are available without extracting them from the game
- * client, which this project doesn't do) — those were part of
- * the original Node app and are out of scope here.
+ * Armory: character/guild lookup.
+ *
+ * Everything below reads the `characters` database only, plus two
+ * *optional* extras that are queried separately and are allowed to fail:
+ *
+ *   `auth`.`account_access`      -> which accounts are Game Masters
+ *   `hotfixes`.`item_sparse`     -> hotfixed/custom item templates
+ *
+ * They used to be LEFT JOINed straight into the character query. That is
+ * what broke the character page: if the read-only MySQL user has no SELECT
+ * grant on the auth database (or the database is named something else), the
+ * *whole* query errors out, the catch block returns null, and the page says
+ * "No character named X could be found" even though the character is right
+ * there. Cross-database joins are now gone; each extra is its own query and
+ * its failure only costs you that one detail.
  * ============================================================ */
 
+/** Minimum number of characters required before we run a name search. */
+const ARMORY_MIN_SEARCH_LENGTH = 3;
+
+/** Escape character used with LIKE (avoids backslash/sql_mode surprises). */
+const ARMORY_LIKE_ESCAPE = '!';
+
 /**
- * Equipment slot id (character_inventory.slot, 0-18, bag=0) => label.
+ * Equipment slot id (character_inventory.slot, bag = 0) => label.
+ * 0-18 are the equipped slots on 3.4.3; 19-22 are the equipped bags and
+ * 23+ is the backpack, which is why the queries below stop at 18.
  */
 function equipSlotLabel(int $slot): string
 {
@@ -299,11 +357,115 @@ function formatPlayedTime(int $seconds): string
 }
 
 /**
- * Look up one character by exact name for the Armory character page.
- * Returns null if not found, or if it belongs to a hidden GM account.
+ * Turn user input into a safe "starts with" LIKE pattern: the wildcards
+ * %, _ and the escape character itself are escaped so a search for "a_b"
+ * looks for a literal underscore instead of any character.
  */
-function findCharacterByName(array $config, string $name): ?array
+function armoryLikePrefix(string $value): string
 {
+    $escaped = str_replace(
+        [ARMORY_LIKE_ESCAPE, '%', '_'],
+        [ARMORY_LIKE_ESCAPE . ARMORY_LIKE_ESCAPE, ARMORY_LIKE_ESCAPE . '%', ARMORY_LIKE_ESCAPE . '_'],
+        $value
+    );
+    return $escaped . '%';
+}
+
+/**
+ * Lowercase helper that also works for the accented characters allowed in
+ * WoW names on some locales (mb_strtolower when mbstring is available).
+ */
+function armoryLower(string $value): string
+{
+    return function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
+}
+
+/**
+ * TrinityCore stores `characters`.`name` with the utf8mb4_bin collation,
+ * which compares byte-for-byte: "sylea" does not match "Sylea", not with =
+ * and not with LIKE. Every name comparison therefore goes through this
+ * helper, which matches either the exact spelling or the lowercased one.
+ * (LOWER() works fine on a utf8mb4 column with a _bin collation — the
+ * "LOWER() does nothing" caveat only applies to real binary strings such as
+ * BINARY/VARBINARY/BLOB columns.)
+ *
+ * Returns [sql fragment, params to bind].
+ */
+function armoryNameMatch(string $column, string $value, bool $prefix, string $suffix = ''): array
+{
+    $raw = $prefix ? armoryLikePrefix($value) : $value;
+    $low = $prefix ? armoryLikePrefix(armoryLower($value)) : armoryLower($value);
+
+    if ($prefix) {
+        $escape = "ESCAPE '" . ARMORY_LIKE_ESCAPE . "'";
+        $sql = "({$column} LIKE :raw{$suffix} {$escape} OR LOWER({$column}) LIKE :low{$suffix} {$escape})";
+    } else {
+        $sql = "({$column} = :raw{$suffix} OR LOWER({$column}) = :low{$suffix})";
+    }
+
+    return [$sql, ["raw{$suffix}" => $raw, "low{$suffix}" => $low]];
+}
+
+/**
+ * True if the `characters` table has the soft-delete columns (TrinityCore
+ * keeps deleted characters around with a blanked name and a deleteDate).
+ * Probed once, because not every fork has them.
+ */
+function charactersHaveDeleteDate(array $config): bool
+{
+    static $has = null;
+    if ($has !== null) {
+        return $has;
+    }
+
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        return $has = false;
+    }
+
+    try {
+        $pdo->query('SELECT deleteDate FROM characters LIMIT 1');
+        return $has = true;
+    } catch (\Throwable $e) {
+        return $has = false;
+    }
+}
+
+/**
+ * SQL fragment that skips soft-deleted characters (and the blank names they
+ * leave behind). Empty string when the column doesn't exist.
+ */
+function armoryAliveFilter(array $config, string $alias = 'c'): string
+{
+    $sql = " AND {$alias}.name IS NOT NULL AND {$alias}.name <> ''";
+    if (charactersHaveDeleteDate($config)) {
+        $sql .= " AND ({$alias}.deleteDate IS NULL OR {$alias}.deleteDate = 0)";
+    }
+    return $sql;
+}
+
+/**
+ * Account ids that belong to Game Masters, from `auth`.`account_access`.
+ *
+ * Returns null when the auth database can't be read (wrong name, no GRANT,
+ * separate MySQL server...). Callers treat null as "can't tell" and show the
+ * characters anyway — hiding the entire realm because of a missing GRANT is
+ * far worse, and the diagnostics page reports it loudly.
+ */
+function gmAccountIds(array $config): ?array
+{
+    static $ids = null;
+    static $attempted = false;
+
+    if ($attempted) {
+        return $ids;
+    }
+    $attempted = true;
+
+    if (empty($config['hide_game_masters'])) {
+        return $ids = [];
+    }
+
     $pdo = connectCharactersDb($config);
     if (!$pdo) {
         return null;
@@ -314,114 +476,182 @@ function findCharacterByName(array $config, string $name): ?array
 
     try {
         $stmt = $pdo->prepare("
-            SELECT c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online,
-                   c.totaltime, c.zone, c.money,
-                   g.guildid, g.name AS guild_name, gr.rname AS guild_rank,
-                   aa.SecurityLevel AS gmlevel
-            FROM characters c
-            LEFT JOIN guild_member gm ON gm.guid = c.guid
-            LEFT JOIN guild g ON g.guildid = gm.guildid
-            LEFT JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
-            WHERE c.name = ?
-            LIMIT 1
+            SELECT DISTINCT AccountID
+            FROM `{$auth}`.`account_access`
+            WHERE SecurityLevel > 0 AND RealmID IN (-1, :realm)
         ");
-        $stmt->execute([$name]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$row) {
-            return null;
-        }
-        if (!empty($config['hide_game_masters']) && (int) ($row['gmlevel'] ?? 0) > 0) {
-            return null;
-        }
-
-        return $row;
+        $stmt->execute(['realm' => $realmId]);
+        $ids = array_fill_keys(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN)), true);
+        return $ids;
     } catch (\Throwable $e) {
-        return null;
+        dbNoteError("read `{$auth}`.`account_access` (Game Master filter)", $e);
+        return $ids = null;
     }
 }
 
 /**
- * Equipped items (bag = 0, slots 0-18) for a character guid, joined
- * against item_sparse (hotfixes db) for name/quality. Indexed by slot.
+ * Should this character be hidden from the Armory because it belongs to a GM?
  */
-function getCharacterEquipment(array $config, int $guid): array
+function isHiddenGmCharacter(array $config, int $accountId): bool
 {
+    if (empty($config['hide_game_masters'])) {
+        return false;
+    }
+    $ids = gmAccountIds($config);
+    return $ids !== null && isset($ids[$accountId]);
+}
+
+/**
+ * Character name search for the Armory search box: type at least three
+ * characters and get every character whose name starts with them,
+ * regardless of capitalisation.
+ */
+function searchCharacters(array $config, string $query, int $limit = 30): array
+{
+    $query = trim($query);
     $pdo = connectCharactersDb($config);
-    if (!$pdo) {
+    if (!$pdo || mb_strlen($query) < ARMORY_MIN_SEARCH_LENGTH) {
         return [];
     }
 
-    $hotfixes = $config['hotfixes_db_name'] ?? 'hotfixes';
+    [$match, $params] = armoryNameMatch('c.name', $query, true);
+    $params['exact'] = armoryLower($query);
+    $limit = max(1, min(200, $limit));
 
     try {
         $stmt = $pdo->prepare("
-            SELECT ci.slot, it.ID AS entry, it.Display AS name, it.OverallQualityID AS Quality, it.InventoryType
-            FROM character_inventory ci
-            JOIN item_instance ii ON ii.guid = ci.item
-            JOIN (
-                SELECT ID, ANY_VALUE(Display) AS Display, ANY_VALUE(OverallQualityID) AS OverallQualityID, ANY_VALUE(InventoryType) AS InventoryType
-                FROM `{$hotfixes}`.`item_sparse`
-                GROUP BY ID
-            ) it ON it.ID = ii.itemEntry
-            WHERE ci.guid = ? AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
-            ORDER BY ci.slot ASC
+            SELECT c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online, c.zone
+            FROM characters c
+            WHERE {$match}" . armoryAliveFilter($config) . "
+            ORDER BY CASE WHEN LOWER(c.name) = :exact THEN 0 ELSE 1 END,
+                     c.level DESC, c.name ASC
+            LIMIT {$limit}
         ");
-        $stmt->execute([$guid]);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        dbNoteError('character name search', $e);
+        return [];
+    }
 
-        $bySlot = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $bySlot[(int) $row['slot']] = $row;
+    return array_values(array_filter($rows, static function (array $row) use ($config) {
+        return !isHiddenGmCharacter($config, (int) $row['account']);
+    }));
+}
+
+/**
+ * Guild name search — same rules as the character search.
+ */
+function searchGuilds(array $config, string $query, int $limit = 30): array
+{
+    $query = trim($query);
+    $pdo = connectCharactersDb($config);
+    if (!$pdo || mb_strlen($query) < ARMORY_MIN_SEARCH_LENGTH) {
+        return [];
+    }
+
+    [$match, $params] = armoryNameMatch('g.name', $query, true);
+    $params['exact'] = armoryLower($query);
+    $limit = max(1, min(200, $limit));
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT g.guildid, g.name, COUNT(gm.guid) AS member_count
+            FROM guild g
+            LEFT JOIN guild_member gm ON gm.guildid = g.guildid
+            WHERE {$match}
+            GROUP BY g.guildid, g.name
+            ORDER BY CASE WHEN LOWER(g.name) = :exact THEN 0 ELSE 1 END,
+                     g.name ASC
+            LIMIT {$limit}
+        ");
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        dbNoteError('guild name search', $e);
+        return [];
+    }
+}
+
+/**
+ * Look up a single character for the Armory profile page, by guid (what the
+ * search results link to) or by name (typed URLs, guild rosters, old links).
+ * The name match is case-insensitive, with the exact spelling preferred.
+ *
+ * Returns null only when there really is no such character (or it belongs to
+ * a hidden GM account).
+ */
+function findCharacter(array $config, ?int $guid = null, string $name = ''): ?array
+{
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        armoryLookupReason('no-db');
+        return null;
+    }
+
+    $columns = 'c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online,
+                c.totaltime, c.leveltime, c.zone, c.map, c.money, c.totalKills, c.logout_time';
+
+    try {
+        if ($guid !== null && $guid > 0) {
+            $stmt = $pdo->prepare("
+                SELECT {$columns}
+                FROM characters c
+                WHERE c.guid = :guid" . armoryAliveFilter($config) . "
+                LIMIT 1
+            ");
+            $stmt->execute(['guid' => $guid]);
+        } else {
+            $name = trim($name);
+            if ($name === '') {
+                return null;
+            }
+            [$match, $params] = armoryNameMatch('c.name', $name, false);
+            $params['exact'] = $name;
+            $stmt = $pdo->prepare("
+                SELECT {$columns}
+                FROM characters c
+                WHERE {$match}" . armoryAliveFilter($config) . "
+                ORDER BY CASE WHEN c.name = :exact THEN 0 ELSE 1 END, c.guid ASC
+                LIMIT 1
+            ");
+            $stmt->execute($params);
         }
-        return $bySlot;
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (\Throwable $e) {
-        return [];
+        dbNoteError('character lookup', $e);
+        return null;
     }
+
+    if (!$row) {
+        armoryLookupReason('not-found');
+        return null;
+    }
+    if (isHiddenGmCharacter($config, (int) $row['account'])) {
+        armoryLookupReason('hidden-gm');
+        return null;
+    }
+
+    armoryLookupReason('');
+    $row['guild'] = getCharacterGuild($config, (int) $row['guid']);
+
+    return $row;
 }
 
 /**
- * Character name search (prefix match) for the Armory search box.
+ * Backwards-compatible wrapper (character.php used to call this directly).
  */
-function searchCharacters(array $config, string $query, int $limit = 15): array
+function findCharacterByName(array $config, string $name): ?array
 {
-    $pdo = connectCharactersDb($config);
-    if (!$pdo || $query === '') {
-        return [];
-    }
-
-    try {
-        $stmt = $pdo->prepare('SELECT guid, name, level, race, class, online FROM characters WHERE name LIKE ? ORDER BY level DESC LIMIT ' . (int) $limit);
-        $stmt->execute([$query . '%']);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (\Throwable $e) {
-        return [];
-    }
+    return findCharacter($config, null, $name);
 }
 
 /**
- * Guild name search (prefix match) for the Armory search box.
+ * Guild membership for one character: ['guildid', 'name', 'rank'] or null.
+ * Its own query, so a guild table problem can't sink the whole profile.
  */
-function searchGuilds(array $config, string $query, int $limit = 15): array
-{
-    $pdo = connectCharactersDb($config);
-    if (!$pdo || $query === '') {
-        return [];
-    }
-
-    try {
-        $stmt = $pdo->prepare('SELECT guildid, name FROM guild WHERE name LIKE ? ORDER BY name ASC LIMIT ' . (int) $limit);
-        $stmt->execute([$query . '%']);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (\Throwable $e) {
-        return [];
-    }
-}
-
-/**
- * Look up one guild by exact name, with leader name resolved.
- */
-function findGuildByName(array $config, string $name): ?array
+function getCharacterGuild(array $config, int $guid): ?array
 {
     $pdo = connectCharactersDb($config);
     if (!$pdo) {
@@ -430,24 +660,293 @@ function findGuildByName(array $config, string $name): ?array
 
     try {
         $stmt = $pdo->prepare('
-            SELECT g.guildid, g.name, g.leaderguid, g.info, g.motd, g.createdate,
-                   lc.name AS leader_name
-            FROM guild g
-            LEFT JOIN characters lc ON lc.guid = g.leaderguid
-            WHERE g.name = ?
+            SELECT g.guildid, g.name, gr.rname AS rank_name
+            FROM guild_member gm
+            JOIN guild g ON g.guildid = gm.guildid
+            LEFT JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
+            WHERE gm.guid = :guid
             LIMIT 1
         ');
-        $stmt->execute([$name]);
+        $stmt->execute(['guid' => $guid]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
     } catch (\Throwable $e) {
+        dbNoteError('character guild lookup', $e);
         return null;
     }
 }
 
 /**
- * Guild roster: members ordered by rank then level, with GM accounts
- * optionally hidden. Rank id (rid) 0 = highest rank (guild master).
+ * The 19 equipped slots of a character, as slot => item row.
+ *
+ * Only the `characters` database is touched here: character_inventory says
+ * which item instance sits in which slot (bag = 0, slots 0-18 are the worn
+ * ones), item_instance turns that instance guid into an item template id.
+ * Turning template ids into names/qualities happens in resolveItems().
+ */
+function getCharacterEquipment(array $config, int $guid): array
+{
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        return [];
+    }
+
+    try {
+        $stmt = $pdo->prepare('
+            SELECT ci.slot, ii.itemEntry, ii.count, ii.durability
+            FROM character_inventory ci
+            JOIN item_instance ii ON ii.guid = ci.item
+            WHERE ci.guid = :guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
+            ORDER BY ci.slot ASC
+        ');
+        $stmt->execute(['guid' => $guid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        dbNoteError('read equipped items', $e);
+        return [];
+    }
+
+    if (!$rows) {
+        return [];
+    }
+
+    $items = resolveItems($config, array_map(static fn ($r) => (int) $r['itemEntry'], $rows));
+
+    $bySlot = [];
+    foreach ($rows as $row) {
+        $entry = (int) $row['itemEntry'];
+        $item = $items[$entry] ?? [
+            'entry'          => $entry,
+            'name'           => "Unknown item #{$entry}",
+            'quality'        => 1,
+            'inventory_type' => 0,
+            'item_level'     => 0,
+            'required_level' => 0,
+            'source'         => 'unresolved',
+        ];
+        $item['slot'] = (int) $row['slot'];
+        $item['durability'] = (int) $row['durability'];
+        $bySlot[(int) $row['slot']] = $item;
+    }
+
+    return $bySlot;
+}
+
+/**
+ * Resolve item template ids to name/quality/item level.
+ *
+ * On 3.4.3 there is no `world`.`item_template` any more — item templates
+ * live in the client's DB2 files, and the `hotfixes` database only holds the
+ * rows the server hotfixes on top of them (usually none). So:
+ *
+ *   1. `hotfixes`.`item_sparse` — wins when present, that's where custom or
+ *      edited items live. Highest VerifiedBuild per id.
+ *   2. `world`.`item_template`  — only exists on 3.3.5-era cores; skipped
+ *      automatically if the table isn't there.
+ *   3. db2/ItemSparse.*.csv     — the bundled client export (see itemdb.php).
+ */
+function resolveItems(array $config, array $entries): array
+{
+    $entries = array_values(array_unique(array_filter(array_map('intval', $entries))));
+    if (!$entries) {
+        return [];
+    }
+
+    $resolved = resolveItemsFromHotfixes($config, $entries);
+
+    $missing = array_values(array_diff($entries, array_keys($resolved)));
+    if ($missing) {
+        $resolved += resolveItemsFromWorldDb($config, $missing);
+    }
+
+    $missing = array_values(array_diff($entries, array_keys($resolved)));
+    if ($missing) {
+        $resolved += itemDb2Lookup($config, $missing);
+    }
+
+    return $resolved;
+}
+
+/**
+ * Step 1: `hotfixes`.`item_sparse`.
+ */
+function resolveItemsFromHotfixes(array $config, array $entries): array
+{
+    $pdo = connectCharactersDb($config);
+    if (!$pdo || empty($config['hotfixes_db_name'])) {
+        return [];
+    }
+
+    $hotfixes = $config['hotfixes_db_name'];
+    $placeholders = implode(',', array_fill(0, count($entries), '?'));
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT ID, Display, OverallQualityID, InventoryType, ItemLevel, RequiredLevel, VerifiedBuild
+            FROM `{$hotfixes}`.`item_sparse`
+            WHERE ID IN ({$placeholders})
+            ORDER BY VerifiedBuild ASC
+        ");
+        $stmt->execute($entries);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        dbNoteError("read `{$hotfixes}`.`item_sparse`", $e);
+        return [];
+    }
+
+    $found = [];
+    foreach ($rows as $row) {
+        $name = trim((string) ($row['Display'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        // ordered by VerifiedBuild ascending, so later rows overwrite older ones
+        $found[(int) $row['ID']] = [
+            'entry'          => (int) $row['ID'],
+            'name'           => $name,
+            'quality'        => (int) $row['OverallQualityID'],
+            'inventory_type' => (int) $row['InventoryType'],
+            'item_level'     => (int) $row['ItemLevel'],
+            'required_level' => (int) $row['RequiredLevel'],
+            'source'         => 'hotfixes',
+        ];
+    }
+
+    return $found;
+}
+
+/**
+ * Step 2: `world`.`item_template`, for 3.3.5-era cores that still have it.
+ * Probed once; on 3.4.3 the table doesn't exist and this quietly does nothing.
+ */
+function resolveItemsFromWorldDb(array $config, array $entries): array
+{
+    static $available = null;
+
+    $pdo = connectCharactersDb($config);
+    if (!$pdo || empty($config['world_db_name']) || $available === false) {
+        return [];
+    }
+
+    $world = $config['world_db_name'];
+    $placeholders = implode(',', array_fill(0, count($entries), '?'));
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT entry AS ID, name AS Display, Quality, InventoryType, ItemLevel, RequiredLevel
+            FROM `{$world}`.`item_template`
+            WHERE entry IN ({$placeholders})
+        ");
+        $stmt->execute($entries);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $available = true;
+    } catch (\Throwable $e) {
+        // Expected on 3.4.3: the table simply doesn't exist any more. Not worth
+        // reporting as an error — armory-diagnostics.php shows its state instead.
+        $available = false;
+        return [];
+    }
+
+    $found = [];
+    foreach ($rows as $row) {
+        $name = trim((string) ($row['Display'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        $found[(int) $row['ID']] = [
+            'entry'          => (int) $row['ID'],
+            'name'           => $name,
+            'quality'        => (int) $row['Quality'],
+            'inventory_type' => (int) $row['InventoryType'],
+            'item_level'     => (int) $row['ItemLevel'],
+            'required_level' => (int) $row['RequiredLevel'],
+            'source'         => 'world',
+        ];
+    }
+
+    return $found;
+}
+
+/**
+ * Average item level of the equipped gear, the way the game counts it:
+ * shirt and tabard don't contribute.
+ */
+function averageItemLevel(array $equipment): ?int
+{
+    $sum = 0;
+    $count = 0;
+    foreach ($equipment as $slot => $item) {
+        if (in_array((int) $slot, [3, 18], true)) { // shirt, tabard
+            continue;
+        }
+        if ((int) $item['item_level'] > 0) {
+            $sum += (int) $item['item_level'];
+            $count++;
+        }
+    }
+    return $count > 0 ? (int) round($sum / $count) : null;
+}
+
+/**
+ * Look up a guild by id or (case-insensitive) name.
+ */
+function findGuild(array $config, ?int $guildId = null, string $name = ''): ?array
+{
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        return null;
+    }
+
+    try {
+        if ($guildId !== null && $guildId > 0) {
+            $stmt = $pdo->prepare('
+                SELECT g.guildid, g.name, g.leaderguid, g.info, g.motd, g.createdate,
+                       lc.name AS leader_name, lc.guid AS leader_guid
+                FROM guild g
+                LEFT JOIN characters lc ON lc.guid = g.leaderguid
+                WHERE g.guildid = :id
+                LIMIT 1
+            ');
+            $stmt->execute(['id' => $guildId]);
+        } else {
+            $name = trim($name);
+            if ($name === '') {
+                return null;
+            }
+            [$match, $params] = armoryNameMatch('g.name', $name, false);
+            $params['exact'] = $name;
+            $stmt = $pdo->prepare("
+                SELECT g.guildid, g.name, g.leaderguid, g.info, g.motd, g.createdate,
+                       lc.name AS leader_name, lc.guid AS leader_guid
+                FROM guild g
+                LEFT JOIN characters lc ON lc.guid = g.leaderguid
+                WHERE {$match}
+                ORDER BY CASE WHEN g.name = :exact THEN 0 ELSE 1 END, g.guildid ASC
+                LIMIT 1
+            ");
+            $stmt->execute($params);
+        }
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    } catch (\Throwable $e) {
+        dbNoteError('guild lookup', $e);
+        return null;
+    }
+}
+
+/**
+ * Backwards-compatible wrapper.
+ */
+function findGuildByName(array $config, string $name): ?array
+{
+    return findGuild($config, null, $name);
+}
+
+/**
+ * Guild roster: members ordered by rank then level. Rank id (rid) 0 is the
+ * guild master. GM characters are filtered out in PHP, so a missing auth
+ * grant can't empty the roster.
  */
 function getGuildMembers(array $config, int $guildId): array
 {
@@ -456,29 +955,269 @@ function getGuildMembers(array $config, int $guildId): array
         return [];
     }
 
-    $auth = $config['auth_db_name'] ?? 'auth';
-    $realmId = (int) ($config['realm_id'] ?? 1);
-    $hideGms = !empty($config['hide_game_masters']);
-
     try {
-        $sql = "
-            SELECT c.name, c.level, c.class, c.race, c.gender, c.zone, c.online,
-                   gr.rname AS rank_name, gr.rid
+        $stmt = $pdo->prepare('
+            SELECT c.guid, c.account, c.name, c.level, c.class, c.race, c.gender, c.zone, c.online,
+                   gr.rname AS rank_name, gm.`rank` AS rank_id
             FROM guild_member gm
             JOIN characters c ON c.guid = gm.guid
-            JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
-            WHERE gm.guildid = ?
-        ";
-        if ($hideGms) {
-            $sql .= ' AND (aa.AccountID IS NULL OR aa.SecurityLevel = 0)';
-        }
-        $sql .= ' ORDER BY gr.rid ASC, c.level DESC, c.name ASC';
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$guildId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            LEFT JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
+            WHERE gm.guildid = :id
+            ORDER BY gm.`rank` ASC, c.level DESC, c.name ASC
+        ');
+        $stmt->execute(['id' => $guildId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (\Throwable $e) {
+        dbNoteError('read guild roster', $e);
         return [];
     }
+
+    return array_values(array_filter($rows, static function (array $row) use ($config) {
+        return !isHiddenGmCharacter($config, (int) $row['account']);
+    }));
+}
+
+/**
+ * Everything armory-diagnostics.php needs: one entry per dependency, each
+ * with a status of ok / warn / fail and a human explanation.
+ */
+function armoryDiagnostics(array $config): array
+{
+    $checks = [];
+
+    $add = static function (array &$checks, string $name, string $status, string $detail, string $hint = '') {
+        $checks[] = ['name' => $name, 'status' => $status, 'detail' => $detail, 'hint' => $hint];
+    };
+
+    // 1. characters database
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        $errors = dbErrors();
+        $add($checks, 'characters database', 'fail',
+            $errors ? end($errors)['message'] : 'db_host is empty in config.php',
+            'Check db_host / db_port / db_user / db_pass in config.php.');
+        return $checks;
+    }
+    $add($checks, 'characters database', 'ok',
+        "connected to `{$config['db_name']}` at {$config['db_host']}:{$config['db_port']}");
+
+    // 2. required tables
+    foreach (['characters', 'character_inventory', 'item_instance', 'guild', 'guild_member', 'guild_rank'] as $table) {
+        try {
+            $count = $pdo->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
+            $add($checks, "table `{$table}`", 'ok', number_format((int) $count) . ' rows');
+        } catch (\Throwable $e) {
+            $add($checks, "table `{$table}`", 'fail', $e->getMessage(),
+                "Grant SELECT on `{$config['db_name']}`.`{$table}` to {$config['db_user']}.");
+        }
+    }
+
+    // 3. name collation — the reason plain "=" needed the exact spelling
+    try {
+        $row = $pdo->query("
+            SELECT COLLATION_NAME AS c
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'characters' AND COLUMN_NAME = 'name'
+        ")->fetch(PDO::FETCH_ASSOC);
+        if ($row && !empty($row['c'])) {
+            $binary = substr($row['c'], -4) === '_bin';
+            $add($checks, 'characters.name collation', 'ok', $row['c'] .
+                ($binary ? ' (case-sensitive — searches use LOWER() to compensate)' : ' (case-insensitive)'));
+        } else {
+            $add($checks, 'characters.name collation', 'warn',
+                'could not be read from information_schema; name matching uses LOWER() either way');
+        }
+    } catch (\Throwable $e) {
+        $add($checks, 'characters.name collation', 'warn', 'could not read information_schema: ' . $e->getMessage());
+    }
+
+    // 4. auth database (GM filter)
+    if (empty($config['hide_game_masters'])) {
+        $add($checks, 'auth.account_access', 'ok', 'not needed (hide_game_masters is off)');
+    } else {
+        $ids = gmAccountIds($config);
+        if ($ids === null) {
+            $errors = array_values(array_filter(dbErrors(), static fn ($e) => str_contains($e['context'], 'account_access')));
+            $add($checks, 'auth.account_access', 'warn',
+                $errors ? end($errors)['message'] : 'unreadable',
+                "GM characters can't be filtered, so they are shown. Fix with: " .
+                "GRANT SELECT ON `" . ($config['auth_db_name'] ?? 'auth') . "`.`account_access` TO '{$config['db_user']}'@'%';");
+        } else {
+            $add($checks, 'auth.account_access', 'ok', count($ids) . ' Game Master account(s) hidden');
+        }
+    }
+
+    // 5. hotfixes database (optional item source)
+    $hotfixes = $config['hotfixes_db_name'] ?? '';
+    if ($hotfixes === '') {
+        $add($checks, 'hotfixes.item_sparse', 'ok', 'not configured — using the bundled DB2 export');
+    } else {
+        try {
+            $count = (int) $pdo->query("SELECT COUNT(*) FROM `{$hotfixes}`.`item_sparse`")->fetchColumn();
+            if ($count === 0) {
+                $add($checks, 'hotfixes.item_sparse', 'ok',
+                    'reachable but empty — normal on a stock server; item names come from the bundled DB2 export');
+            } else {
+                $add($checks, 'hotfixes.item_sparse', 'ok', number_format($count) . ' rows (used first, for custom items)');
+            }
+        } catch (\Throwable $e) {
+            $add($checks, 'hotfixes.item_sparse', 'warn', $e->getMessage(),
+                'Optional. Custom/hotfixed items will fall back to the bundled DB2 export.');
+        }
+    }
+
+    // 6. world.item_template — only 3.3.5-era cores still have it
+    $world = $config['world_db_name'] ?? '';
+    if ($world === '') {
+        $add($checks, 'world.item_template', 'ok', 'not configured (expected on 3.4.3)');
+    } else {
+        try {
+            $count = (int) $pdo->query("SELECT COUNT(*) FROM `{$world}`.`item_template`")->fetchColumn();
+            $add($checks, 'world.item_template', 'ok', number_format($count) . ' rows (used as a second item source)');
+        } catch (\Throwable $e) {
+            $add($checks, 'world.item_template', 'ok',
+                'absent — normal on 3.4.3, where item templates live in the client DB2 files');
+        }
+    }
+
+    // 7. bundled DB2 item export
+    $db2 = itemDb2Status($config);
+    if ($db2['csv'] === null) {
+        $add($checks, 'db2/ItemSparse CSV', 'fail', (string) $db2['error'],
+            'Equipment can only be named from hotfixes.item_sparse without it.');
+    } elseif ($db2['index_built']) {
+        $add($checks, 'db2/ItemSparse CSV', 'ok',
+            basename($db2['csv']) . ' — ' . number_format($db2['index_count']) . ' items indexed in ' . $db2['cache_dir']);
+    } else {
+        $add($checks, 'db2/ItemSparse CSV', 'warn',
+            basename($db2['csv']) . ' found, but the index could not be built: ' . (string) $db2['error'],
+            'Falls back to scanning the CSV on every lookup (slower). Make the cache directory writable to fix.');
+    }
+
+    // 8. end-to-end: a character with gear
+    try {
+        $sample = $pdo->query('
+            SELECT c.guid, c.name, COUNT(ci.item) AS items
+            FROM characters c
+            JOIN character_inventory ci ON ci.guid = c.guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
+            GROUP BY c.guid, c.name
+            ORDER BY items DESC
+            LIMIT 1
+        ')->fetch(PDO::FETCH_ASSOC);
+
+        if (!$sample) {
+            $add($checks, 'equipment lookup', 'warn', 'no character on this realm has anything equipped yet');
+        } else {
+            $equipment = getCharacterEquipment($config, (int) $sample['guid']);
+            $named = array_filter($equipment, static fn ($i) => $i['source'] !== 'unresolved');
+            $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));
+            $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped items resolved';
+            if ($sources) {
+                $detail .= ' (' . implode(', ', array_map(
+                    static fn ($k, $v) => "{$v} via {$k}",
+                    array_keys($sources),
+                    $sources
+                )) . ')';
+            }
+            $add($checks, 'equipment lookup', count($named) === count($equipment) ? 'ok' : 'warn', $detail);
+        }
+    } catch (\Throwable $e) {
+        $add($checks, 'equipment lookup', 'fail', $e->getMessage());
+    }
+
+    return $checks;
+}
+
+/**
+ * Why did the last findCharacter() call come back empty? Set so the profile
+ * page can explain itself in debug mode instead of just saying "not found".
+ * One of: '', 'no-db', 'not-found', 'hidden-gm'.
+ */
+function armoryLookupReason(?string $set = null): string
+{
+    static $reason = '';
+    if ($set !== null) {
+        $reason = $set;
+    }
+    return $reason;
+}
+
+/**
+ * Trace what the Armory sees for one name — used by armory-diagnostics.php.
+ *
+ * Deliberately looks past every filter the normal lookup applies (deleted
+ * characters, GM accounts) so it can tell you *why* a character you know
+ * exists isn't showing up.
+ */
+function armoryTraceName(array $config, string $name): array
+{
+    $trace = [
+        'name'      => $name,
+        'error'     => null,
+        'matches'   => [],
+        'equipment' => [],
+    ];
+
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        $trace['error'] = 'No connection to the characters database.';
+        return $trace;
+    }
+
+    [$match, $params] = armoryNameMatch('c.name', trim($name), false);
+    $deleteCol = charactersHaveDeleteDate($config) ? 'c.deleteDate' : 'NULL AS deleteDate';
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT c.guid, c.account, c.name, c.level, c.race, c.class, {$deleteCol}
+            FROM characters c
+            WHERE {$match}
+            ORDER BY c.guid ASC
+            LIMIT 20
+        ");
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        $trace['error'] = $e->getMessage();
+        return $trace;
+    }
+
+    $gmIds = gmAccountIds($config);
+
+    foreach ($rows as $row) {
+        $deleted = !empty($row['deleteDate']);
+        $isGm = $gmIds === null ? null : isset($gmIds[(int) $row['account']]);
+        $hidden = $deleted || ($isGm === true && !empty($config['hide_game_masters']));
+
+        $why = 'visible on the Armory';
+        if ($deleted) {
+            $why = 'deleted character (deleteDate is set) — hidden on purpose';
+        } elseif ($isGm === true && !empty($config['hide_game_masters'])) {
+            $why = 'account is a Game Master and hide_game_masters is on — set it to false in config.php to show it';
+        } elseif ($isGm === null) {
+            $why = 'visible (GM status unknown — auth database unreadable)';
+        }
+
+        $trace['matches'][] = [
+            'guid'    => (int) $row['guid'],
+            'name'    => (string) $row['name'],
+            'account' => (int) $row['account'],
+            'level'   => (int) $row['level'],
+            'hidden'  => $hidden,
+            'why'     => $why,
+        ];
+
+        if (!$hidden && !$trace['equipment']) {
+            foreach (getCharacterEquipment($config, (int) $row['guid']) as $slot => $item) {
+                $trace['equipment'][] = [
+                    'slot'   => equipSlotLabel((int) $slot),
+                    'entry'  => (int) $item['entry'],
+                    'name'   => (string) $item['name'],
+                    'source' => (string) $item['source'],
+                ];
+            }
+        }
+    }
+
+    return $trace;
 }

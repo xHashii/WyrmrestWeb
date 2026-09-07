@@ -28,14 +28,22 @@ htdocs/                    (or wherever your web root is)
   leaderboard.php      Top Characters
   info.php             Realmlist, expansion, rates, Discord/support links
   armory.php           Armory: character/guild search
+  armory-suggest.php   Armory: JSON type-ahead for the search box
+  armory-diagnostics.php  Armory: database/data-source self-check
   character.php        Armory: character profile + equipment
   guild.php            Armory: guild roster
   includes/
     bootstrap.php      Session start, config load, SOAP/DB helper functions
+    itemdb.php         Item names/quality from the bundled DB2 export
+    db-errors.php      Inline database-problem notice (debug mode only)
     header.php         Shared <head>/styles, nav bar, status bar
     footer.php         Closes the page, site footer, copy-to-clipboard script
   data/
     zones.php          Zone ID -> name lookup for "Who's Online"
+  db2/
+    ItemSparse.*.csv   3.4.3 client item export (item names/quality/ilvl)
+  cache/
+    items-*.idx/.dat   Generated item index (auto-rebuilt, safe to delete)
   images/
     class/, race/      Class/race icons (you provide these — see below)
 ```
@@ -201,68 +209,132 @@ All pages collapse to a single column on narrow/mobile screens.
 A native PHP armory — ported from the uploaded Node.js/TypeScript
 `wyrmrest-armory` project, covering its core lookup features. It reuses
 the same `characters` DB connection as "Who's Online" and the
-leaderboard, plus two more tables (see grants below).
+leaderboard.
 
-**What's included:** character search, a character page (level, race,
-class, faction, guild, zone, played time, online status, and equipped
-gear by slot), guild search, and a guild roster page (members, ranks,
-levels).
+**What's included:** character search (type the first three letters and
+get every name that starts with them, with live suggestions), a
+character page (level, race, class, faction, guild, zone, played time,
+online status, average item level, and equipped gear by slot with
+quality colors and item levels), guild search, a guild roster page, and
+a diagnostics page that checks every database and file the Armory needs.
 
 **What's not included** (present in the original Node app, cut here to
 keep this a reasonable scope): talent trees, glyphs, achievements,
-PvP/arena ladder, transmog, and item tooltips/icons — showing an item's
-name and quality color is straightforward from `item_template`, but
-actual item icon images would need extracting from the game client's
-MPQ files, which this project doesn't do. Equipped items show as
-quality-colored text only, no icon graphic.
+PvP/arena ladder, transmog, and item icons — the icon images would have
+to be extracted from the game client, which this project doesn't do.
+Equipped items show as quality-colored text with their item level.
 
 ### Files
 
 ```
-armory.php       Search page (character or guild, by name)
-character.php    Character profile + equipment
-guild.php        Guild roster
+armory.php              Search page (character or guild, by name prefix)
+armory-suggest.php      JSON type-ahead endpoint used by the search box
+armory-diagnostics.php  "why doesn't my character show up" checker
+character.php           Character profile + equipment
+guild.php               Guild roster
+includes/itemdb.php     Item names from the bundled DB2 export
+cache/                  Generated item index (safe to delete, rebuilt on demand)
+db2/                    ItemSparse/Item CSV exports from the 3.4.3 client
 ```
 
 Plus the query functions in `includes/bootstrap.php` (search for
 "Armory:" in that file).
 
+### Where the data actually lives
+
+This is the part that trips everyone up, so, concretely, for
+TrinityCore 3.4.3 ([characters DB reference][tc-chars]):
+
+| What | Where |
+| --- | --- |
+| Characters | `characters`.`characters` |
+| Which item is in which slot | `characters`.`character_inventory` — `bag = 0`, `slot` 0-18 are the equipped slots |
+| The item object itself | `characters`.`item_instance` (`itemEntry` = item template id) |
+| Guilds | `characters`.`guild`, `guild_member`, `guild_rank` |
+| Item name / quality / item level | **not** in the world DB — see below |
+| Who is a Game Master | `auth`.`account_access` (optional) |
+
+[tc-chars]: https://trinitycore.info/en/database/master/characters/home
+
+On 3.4.3 (and master) there is **no `world`.`item_template`** any more.
+TrinityCore reads item templates straight out of the client's DB2 files,
+and the `hotfixes` database only mirrors the rows the server has to
+hotfix down to the client — on a stock server `hotfixes.item_sparse` is
+usually completely empty. Joining a character's gear against it
+therefore returns nothing, which is why equipment used to come up blank.
+
+So item entries are resolved in this order:
+
+1. `hotfixes`.`item_sparse` — custom or edited items win (highest
+   `VerifiedBuild` per id).
+2. `world`.`item_template` — only exists on 3.3.5-era cores; skipped
+   automatically when it isn't there.
+3. `db2/ItemSparse.*.csv` — the bundled 3.4.3 client export, 45k items.
+   On first use it is compiled into a small sorted binary index in
+   `cache/` (about 1.7 MB) so lookups are a binary search; if `cache/`
+   isn't writable the CSV is scanned instead — slower, but still correct.
+
+To swap in a newer client export, drop the new
+`ItemSparse.<build>.csv` into `db2/`; the index rebuilds itself.
+
+### Name matching
+
+`characters`.`name` uses the **`utf8mb4_bin`** collation, which compares
+byte for byte — `WHERE name = 'sylea'` does not match `Sylea`, and
+neither does `LIKE 'syl%'`. Every name comparison in the Armory
+therefore also compares `LOWER(name)`, so searching and opening a
+profile work in any capitalisation. Search results link by `guid`
+(`character.php?guid=123`), so clicking a result can't fail on spelling;
+`character.php?name=Sylea` still works for typed URLs.
+
+Searches are prefix searches with a three-character minimum
+(`ARMORY_MIN_SEARCH_LENGTH` in `includes/bootstrap.php`), and `%`/`_`
+typed by a visitor are escaped rather than treated as wildcards.
+
 ### Setup
 
-It uses the same `wow_readonly` user as "Who's Online", widened to
-cover two more tables — `item_template` (world db, for item names) and
-`account_access` (auth db, to hide GM characters from search/rosters,
-same as the `hide_game_masters` behavior the Node app had):
+It uses the same `wow_readonly` user as "Who's Online". Only the
+`characters` grant is required; the other two are optional extras:
+
 ```sql
 GRANT SELECT ON characters.* TO 'wow_readonly'@'%';
-GRANT SELECT ON world.item_template TO 'wow_readonly'@'%';
-GRANT SELECT ON auth.account_access TO 'wow_readonly'@'%';
+GRANT SELECT ON auth.account_access TO 'wow_readonly'@'%';   -- hides GM characters
+GRANT SELECT ON hotfixes.item_sparse TO 'wow_readonly'@'%';  -- custom item names
 FLUSH PRIVILEGES;
 ```
-(If you already ran the widened `characters.*` grant from the
-"Who's Online" section, you only need the two new lines.)
 
 In `config.php`, alongside the existing `db_*` settings:
 ```php
-'world_db_name' => 'world', // database name for item_template lookups
-'auth_db_name'  => 'auth',  // database name for account_access
-'realm_id'      => 1,       // matches your realm's ID in the auth db
+'world_db_name'    => 'world',    // only used if your core still has item_template
+'auth_db_name'     => 'auth',     // database holding account_access
+'hotfixes_db_name' => 'hotfixes', // database holding item_sparse
+'realm_id'         => 1,          // matches your realm's ID in the auth db
 'hide_game_masters' => true,
 ```
-If your world/auth databases are named something other than `world`/
-`auth`, change those two values to match. `realm_id` should match the
-realm's actual ID (`realmlist` table in `auth`) — `account_access` rows
-are scoped per-realm (plus `RealmID = -1` for "all realms" GMs).
+`realm_id` should match the realm's actual ID (`realmlist` table in
+`auth`) — `account_access` rows are scoped per-realm (plus `RealmID = -1`
+for "all realms" GMs).
 
-That's it — no separate server, no separate port, no Node.js involved.
-The "Armory" nav link is always shown; if `db_host` isn't configured
-yet, the page just says so instead of erroring.
+Missing grants no longer break pages. If `auth`.`account_access` can't be
+read, GM characters simply aren't hidden; if `hotfixes`.`item_sparse`
+can't be read, item names come from the bundled DB2 export.
 
-### Schema notes
+### When something doesn't show up: armory-diagnostics.php
 
-I verified every table/column name used here (`characters`,
-`character_inventory`, `item_instance`, `item_template`, `guild`,
-`guild_member`, `guild_rank`, `account_access`) against TrinityCore's
-own schema docs while writing this — not guessed. If something still
-doesn't match your exact database version, tell me the error and I'll
-adjust the specific query.
+Open `armory-diagnostics.php` on your server. It checks, one line each:
+
+- the `characters` connection and every table the Armory reads,
+- the collation of `characters`.`name`,
+- whether `auth`.`account_access` is readable (and the exact `GRANT`
+  statement to run if it isn't),
+- whether `hotfixes`.`item_sparse` exists, is empty, or is unreadable,
+- whether the bundled DB2 export and its index are usable,
+- and an end-to-end test: it picks a character that has gear and reports
+  how many of their items it could name, and from which source.
+
+It also has a **name tracer**: type a character name and it shows every
+matching row regardless of capitalisation, whether that character is
+deleted or on a GM account, and each equipped item with the source its
+name came from. Set `'debug' => true` in `config.php` to see full error
+messages (they're hidden from visitors otherwise); with debug on, the
+Armory pages also print any database problem they hit inline.

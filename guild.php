@@ -1,8 +1,10 @@
 <?php
 require __DIR__ . '/includes/bootstrap.php';
 
+$guildId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 $name = trim($_GET['name'] ?? '');
-$guild = $name !== '' ? findGuildByName($config, $name) : null;
+
+$guild = ($guildId > 0 || $name !== '') ? findGuild($config, $guildId ?: null, $name) : null;
 $members = $guild ? getGuildMembers($config, (int) $guild['guildid']) : [];
 
 $activePage = 'armory';
@@ -13,10 +15,22 @@ require __DIR__ . '/includes/header.php';
 <?php if (!$guild): ?>
   <div class="page-header">
     <h1>Guild not found</h1>
-    <p>No guild named "<?= htmlspecialchars($name) ?>" could be found.</p>
+    <p>
+      <?php if ($name !== ''): ?>
+        No guild named "<?= htmlspecialchars($name) ?>" could be found.
+      <?php else: ?>
+        No guild with id <?= $guildId ?> could be found.
+      <?php endif; ?>
+    </p>
   </div>
   <div class="panel">
-    <p class="roster-empty"><a href="armory.php" class="discord-link" style="margin:0;">Back to search</a></p>
+    <form method="GET" action="armory.php" class="armory-search">
+      <input type="hidden" name="type" value="guild">
+      <input type="text" name="q" value="<?= htmlspecialchars($name) ?>"
+             placeholder="Search for a guild…" minlength="<?= ARMORY_MIN_SEARCH_LENGTH ?>">
+      <button type="submit">Search</button>
+    </form>
+    <?php require __DIR__ . '/includes/db-errors.php'; ?>
   </div>
 <?php else: ?>
   <div class="panel">
@@ -24,7 +38,7 @@ require __DIR__ . '/includes/header.php';
       <h1>&lt;<?= htmlspecialchars($guild['name']) ?>&gt;</h1>
       <div class="char-sub">
         <?php if ($guild['leader_name']): ?>
-          Led by <a href="character.php?name=<?= urlencode($guild['leader_name']) ?>" style="color: var(--gold-bright);"><?= htmlspecialchars($guild['leader_name']) ?></a>
+          Led by <a href="character.php?guid=<?= (int) $guild['leader_guid'] ?>" style="color: var(--gold-bright);"><?= htmlspecialchars($guild['leader_name']) ?></a>
           ·
         <?php endif; ?>
         <?= count($members) ?> members
@@ -54,9 +68,9 @@ require __DIR__ . '/includes/header.php';
             <tr>
               <td>
                 <span class="status-dot <?= (int) $m['online'] === 1 ? 'online' : '' ?>"></span>
-                <a href="character.php?name=<?= urlencode($m['name']) ?>"><?= htmlspecialchars($m['name']) ?></a>
+                <a href="character.php?guid=<?= (int) $m['guid'] ?>"><?= htmlspecialchars($m['name']) ?></a>
               </td>
-              <td><?= htmlspecialchars($m['rank_name']) ?></td>
+              <td><?= htmlspecialchars($m['rank_name'] ?? ('Rank ' . (int) $m['rank_id'])) ?></td>
               <td><?= (int) $m['level'] ?></td>
               <td><?= htmlspecialchars(className((int) $m['class'])) ?></td>
             </tr>
@@ -64,6 +78,7 @@ require __DIR__ . '/includes/header.php';
         </tbody>
       </table>
     <?php endif; ?>
+    <?php require __DIR__ . '/includes/db-errors.php'; ?>
   </div>
 <?php endif; ?>
 
