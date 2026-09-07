@@ -145,8 +145,15 @@ require __DIR__ . '/includes/header.php';
   <dl class="stats diag-legend">
     <div>
       <dt>Characters &amp; gear</dt>
-      <dd><code><?= htmlspecialchars($config['db_name']) ?></code> — <code>characters</code>,
-          <code>character_inventory</code> (bag 0, slots 0-18), <code>item_instance</code></dd>
+      <dd><code><?= htmlspecialchars($config['db_name']) ?></code> —
+          <code>characters.guid</code> = <code>character_inventory.guid</code>,
+          <code>character_inventory.item</code> = <code>item_instance.guid</code></dd>
+    </div>
+    <div>
+      <dt>Slot map (3.4.3)</dt>
+      <dd>bag 0: 0-18 equipped · 19-29 profession · 30-33 bags · 34 reagent bag ·
+          35-62 backpack · 63+ bank/buyback (not shown). Any other
+          <code>bag</code> value is the item guid of the container the item is in.</dd>
     </div>
     <div>
       <dt>Game Master filter</dt>

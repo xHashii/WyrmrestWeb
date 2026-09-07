@@ -100,6 +100,15 @@ return [
     'hide_game_masters' => true, // hide GM characters/guild members from the Armory
 
     /**
+     * Show what a character is carrying (equipped bags + backpack) on their
+     * Armory page. `character_inventory` holds those rows right next to the
+     * equipped ones, so it costs nothing extra to read; set it to false if
+     * you'd rather keep player inventories private. Bank, buyback and
+     * reagent-bank slots are never shown either way.
+     */
+    'show_bag_contents' => true,
+
+    /**
      * When true, a "Connection details" toggle appears in the status bar
      * showing the raw SOAP error if the realm is offline, and the Armory
      * pages print the reason behind any database problem they hit (instead

@@ -247,14 +247,56 @@ TrinityCore 3.4.3 ([characters DB reference][tc-chars]):
 
 | What | Where |
 | --- | --- |
-| Characters | `characters`.`characters` |
-| Which item is in which slot | `characters`.`character_inventory` — `bag = 0`, `slot` 0-18 are the equipped slots |
+| Characters | [`characters`.`characters`][tc-characters] |
+| Which item is in which slot | [`characters`.`character_inventory`][tc-inventory] |
 | The item object itself | `characters`.`item_instance` (`itemEntry` = item template id) |
 | Guilds | `characters`.`guild`, `guild_member`, `guild_rank` |
 | Item name / quality / item level | **not** in the world DB — see below |
 | Who is a Game Master | `auth`.`account_access` (optional) |
 
 [tc-chars]: https://trinitycore.info/en/database/master/characters/home
+[tc-characters]: https://trinitycore.info/database/master/characters/characters
+[tc-inventory]: https://trinitycore.info/database/master/characters/character_inventory
+
+The character page joins those three tables in one query, in that order:
+
+```sql
+SELECT ci.bag, ci.slot, ci.item, ii.itemEntry, ii.count, ii.owner_guid
+FROM characters c
+JOIN character_inventory ci ON ci.guid = c.guid      -- whose items these are
+LEFT JOIN item_instance   ii ON ii.guid = ci.item    -- which item object
+WHERE c.guid = :guid
+ORDER BY ci.bag, ci.slot
+```
+
+`character_inventory.item` is the table's PRIMARY KEY, so an item instance
+can only ever be listed under one character — that link, not
+`item_instance.owner_guid`, is what decides whose item it is. (A row where
+the two disagree is a sign of a crash or a manual edit; the diagnostics page
+counts them.)
+
+`bag` is `0` when the item sits directly on the character, otherwise it's the
+`item_instance.guid` of the container it's inside — which is how bag contents
+are attached to the right bag. `slot` then means, on 3.4.3
+(`Player.h`, branch `3.4.3` — these are **not** the 3.3.5 numbers, where bags
+started at 19):
+
+| Slots | Meaning | Shown |
+| --- | --- | --- |
+| 0-18 | equipped gear | Equipment grid |
+| 19-29 | profession tools/gear | "Profession gear" |
+| 30-33 | equipped bags | "Bags" |
+| 34 | reagent bag | "Bags" |
+| 35-62 | backpack | "Bags" |
+| 63-90 | bank | no |
+| 91-97 | bank bags | no |
+| 98-109 | buyback | no |
+| 110-207 | reagent bank | no |
+| 208-210 | child equipment | no |
+
+Bag and backpack contents can be switched off with
+`'show_bag_contents' => false` in `config.php`; bank, buyback and reagent-bank
+slots are never shown.
 
 On 3.4.3 (and master) there is **no `world`.`item_template`** any more.
 TrinityCore reads item templates straight out of the client's DB2 files,

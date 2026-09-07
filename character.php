@@ -5,8 +5,20 @@ $guid = isset($_GET['guid']) ? (int) $_GET['guid'] : 0;
 $name = trim($_GET['name'] ?? '');
 
 $character = ($guid > 0 || $name !== '') ? findCharacter($config, $guid ?: null, $name) : null;
-$equipment = $character ? getCharacterEquipment($config, (int) $character['guid']) : [];
+
+// One read of character_inventory for this character (equipped gear, the
+// profession slots, the equipped bags and their contents, and the backpack).
+$inventory = $character ? getCharacterInventory($config, (int) $character['guid']) : null;
+$equipment = $inventory['equipped'] ?? [];
+$professionItems = $inventory['profession'] ?? [];
+$bags = $inventory['bags'] ?? [];
+$backpack = $inventory['backpack'] ?? [];
 $averageIlvl = $equipment ? averageItemLevel($equipment) : null;
+$showBags = !empty($config['show_bag_contents']);
+$carriedCount = count($backpack);
+foreach ($bags as $bag) {
+    $carriedCount += count($bag['contents']);
+}
 
 // Anything typed in the URL is also worth offering as a search.
 $searchTerm = $name !== '' ? $name : '';
@@ -160,8 +172,74 @@ require __DIR__ . '/includes/header.php';
         </p>
       <?php endif; ?>
     <?php endif; ?>
+
+    <?php if ($professionItems): ?>
+      <h2 style="margin-top: 26px;">Profession gear</h2>
+      <div class="equip-grid">
+        <?php foreach ($professionItems as $slot => $item): ?>
+          <?php $q = itemQualityInfo((int) $item['quality']); ?>
+          <div class="equip-row">
+            <span class="slot-label"><?= htmlspecialchars(professionSlotLabel((int) $slot)) ?></span>
+            <span class="item-name" style="color: <?= $q[1] ?>;"><?= htmlspecialchars($item['name']) ?></span>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
     <?php require __DIR__ . '/includes/db-errors.php'; ?>
   </div>
+
+  <?php if ($showBags): ?>
+    <div class="panel" style="margin-top: 22px;">
+      <h2>Bags <span class="bag-total"><?= $carriedCount ?> item<?= $carriedCount === 1 ? '' : 's' ?> carried</span></h2>
+
+      <?php if (!$bags && !$backpack): ?>
+        <p class="roster-empty">This character isn't carrying anything.</p>
+      <?php else: ?>
+        <div class="bag-group">
+          <div class="bag-head">
+            <span class="bag-name">Backpack</span>
+            <span class="bag-meta"><?= count($backpack) ?> item<?= count($backpack) === 1 ? '' : 's' ?></span>
+          </div>
+          <?php if (!$backpack): ?>
+            <p class="bag-empty">Empty</p>
+          <?php else: ?>
+            <ul class="bag-list">
+              <?php foreach ($backpack as $item): ?>
+                <?php $q = itemQualityInfo((int) $item['quality']); ?>
+                <li>
+                  <span class="item-name" style="color: <?= $q[1] ?>;"><?= htmlspecialchars($item['name']) ?></span>
+                  <?php if ((int) $item['count'] > 1): ?><span class="item-count">×<?= (int) $item['count'] ?></span><?php endif; ?>
+                </li>
+              <?php endforeach; ?>
+            </ul>
+          <?php endif; ?>
+        </div>
+
+        <?php foreach ($bags as $bag): ?>
+          <?php $bq = itemQualityInfo((int) $bag['item']['quality']); ?>
+          <div class="bag-group">
+            <div class="bag-head">
+              <span class="bag-name" style="color: <?= $bq[1] ?>;"><?= htmlspecialchars($bag['item']['name']) ?></span>
+              <span class="bag-meta"><?= count($bag['contents']) ?> item<?= count($bag['contents']) === 1 ? '' : 's' ?></span>
+            </div>
+            <?php if (!$bag['contents']): ?>
+              <p class="bag-empty">Empty</p>
+            <?php else: ?>
+              <ul class="bag-list">
+                <?php foreach ($bag['contents'] as $item): ?>
+                  <?php $q = itemQualityInfo((int) $item['quality']); ?>
+                  <li>
+                    <span class="item-name" style="color: <?= $q[1] ?>;"><?= htmlspecialchars($item['name']) ?></span>
+                    <?php if ((int) $item['count'] > 1): ?><span class="item-count">×<?= (int) $item['count'] ?></span><?php endif; ?>
+                  </li>
+                <?php endforeach; ?>
+              </ul>
+            <?php endif; ?>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </div>
+  <?php endif; ?>
 <?php endif; ?>
 
 <?php require __DIR__ . '/includes/footer.php'; ?>

@@ -295,9 +295,47 @@ const ARMORY_MIN_SEARCH_LENGTH = 3;
 const ARMORY_LIKE_ESCAPE = '!';
 
 /**
- * Equipment slot id (character_inventory.slot, bag = 0) => label.
- * 0-18 are the equipped slots on 3.4.3; 19-22 are the equipped bags and
- * 23+ is the backpack, which is why the queries below stop at 18.
+ * How `character_inventory` addresses a character's items on 3.4.3.
+ *
+ * A row is (guid, bag, slot, item):
+ *   guid  -> characters.guid, the owner
+ *   item  -> item_instance.guid, the item object (PRIMARY KEY, so one item
+ *            instance is in exactly one place)
+ *   bag   -> 0 when the item sits directly on the character (equipped,
+ *            backpack, bank, ...), otherwise the item_instance.guid of the
+ *            container it's inside
+ *   slot  -> position within that bag, or, when bag = 0, a position in the
+ *            character's own slot map:
+ *
+ *      0 - 18    equipped gear      (EQUIPMENT_SLOT_START .. EQUIPMENT_SLOT_END)
+ *     19 - 29    profession tools   (PROFESSION_SLOT_*)
+ *     30 - 33    equipped bags      (INVENTORY_SLOT_BAG_START .. _END)
+ *     34         reagent bag        (REAGENT_BAG_SLOT_START)
+ *     35 - 62    backpack           (INVENTORY_SLOT_ITEM_START .. _END)
+ *     63 - 90    bank               (BANK_SLOT_ITEM_START .. _END)
+ *     91 - 97    bank bags          (BANK_SLOT_BAG_START .. _END)
+ *     98 - 109   buyback            (BUYBACK_SLOT_START .. _END)
+ *    110 - 207   reagent bank       (REAGENT_SLOT_START .. _END)
+ *    208 - 210   child equipment    (CHILD_EQUIPMENT_SLOT_START .. _END)
+ *
+ * Values taken from TrinityCore's Player.h on the 3.4.3 branch — note they
+ * are NOT the 3.3.5 numbers (where bags started at 19), so anything that
+ * hardcodes "slot > 18 means backpack" is wrong on this core.
+ */
+const INV_EQUIPMENT_FIRST  = 0;
+const INV_EQUIPMENT_LAST   = 18;
+const INV_PROFESSION_FIRST = 19;
+const INV_PROFESSION_LAST  = 29;
+const INV_BAG_FIRST        = 30;
+const INV_BAG_LAST         = 33;
+const INV_REAGENT_BAG      = 34;
+const INV_BACKPACK_FIRST   = 35;
+const INV_BACKPACK_LAST    = 62;
+const INV_BANK_FIRST       = 63;
+const INV_BANK_LAST        = 97;
+
+/**
+ * Equipment slot id (character_inventory.slot with bag = 0) => label.
  */
 function equipSlotLabel(int $slot): string
 {
@@ -306,6 +344,20 @@ function equipSlotLabel(int $slot): string
         5 => 'Waist', 6 => 'Legs', 7 => 'Feet', 8 => 'Wrists', 9 => 'Hands',
         10 => 'Finger 1', 11 => 'Finger 2', 12 => 'Trinket 1', 13 => 'Trinket 2',
         14 => 'Back', 15 => 'Main Hand', 16 => 'Off Hand', 17 => 'Ranged', 18 => 'Tabard',
+    ];
+    return $labels[$slot] ?? "Slot {$slot}";
+}
+
+/**
+ * Profession/tool slot label (slots 19-29, bag = 0).
+ */
+function professionSlotLabel(int $slot): string
+{
+    static $labels = [
+        19 => 'Profession 1 Tool', 20 => 'Profession 1 Gear', 21 => 'Profession 1 Gear',
+        22 => 'Profession 2 Tool', 23 => 'Profession 2 Gear', 24 => 'Profession 2 Gear',
+        25 => 'Cooking Tool', 26 => 'Cooking Gear',
+        27 => 'Fishing Tool', 28 => 'Fishing Gear', 29 => 'Fishing Gear',
     ];
     return $labels[$slot] ?? "Slot {$slot}";
 }
@@ -686,43 +738,77 @@ function getCharacterGuild(array $config, int $guid): ?array
 }
 
 /**
- * The 19 equipped slots of a character, as slot => item row.
+ * Everything `character_inventory` holds for one character, tied to the
+ * character row itself:
  *
- * Only the `characters` database is touched here: character_inventory says
- * which item instance sits in which slot (bag = 0, slots 0-18 are the worn
- * ones), item_instance turns that instance guid into an item template id.
- * Turning template ids into names/qualities happens in resolveItems().
+ *     characters.guid  =  character_inventory.guid      (whose items these are)
+ *     character_inventory.item  =  item_instance.guid   (which item object)
+ *     item_instance.itemEntry   ->  item template id    (what that item is)
+ *
+ * One query, then the rows are sorted into buckets by the slot map above.
+ * Items inside a bag have `bag` set to the container's item_instance.guid,
+ * so they are attached to the bag they live in.
+ *
+ * Returns:
+ *   equipped   slot => item (0-18)
+ *   profession slot => item (19-29)
+ *   bags       list of ['slot', 'item', 'contents' => slot => item]
+ *   backpack   slot => item (35-62)
+ *   integrity  counters for armory-diagnostics.php
  */
-function getCharacterEquipment(array $config, int $guid): array
+function getCharacterInventory(array $config, int $guid): array
 {
+    $inventory = [
+        'equipped'   => [],
+        'profession' => [],
+        'bags'       => [],
+        'backpack'   => [],
+        'integrity'  => ['rows' => 0, 'missing_instance' => 0, 'owner_mismatch' => 0, 'orphan_bag' => 0],
+    ];
+
     $pdo = connectCharactersDb($config);
-    if (!$pdo) {
-        return [];
+    if (!$pdo || $guid <= 0) {
+        return $inventory;
     }
 
     try {
+        // Joined through `characters` on purpose: the guid the page was asked
+        // for has to exist as a character before any of its inventory rows
+        // count, and item_instance is reached through character_inventory.item
+        // (its PRIMARY KEY), so an item can only ever appear under one owner.
         $stmt = $pdo->prepare('
-            SELECT ci.slot, ii.itemEntry, ii.count, ii.durability
-            FROM character_inventory ci
-            JOIN item_instance ii ON ii.guid = ci.item
-            WHERE ci.guid = :guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
-            ORDER BY ci.slot ASC
+            SELECT ci.bag, ci.slot, ci.item AS item_guid,
+                   ii.itemEntry, ii.count, ii.durability, ii.owner_guid
+            FROM characters c
+            JOIN character_inventory ci ON ci.guid = c.guid
+            LEFT JOIN item_instance ii ON ii.guid = ci.item
+            WHERE c.guid = :guid
+            ORDER BY ci.bag ASC, ci.slot ASC
         ');
         $stmt->execute(['guid' => $guid]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (\Throwable $e) {
-        dbNoteError('read equipped items', $e);
-        return [];
+        dbNoteError('read character inventory', $e);
+        return $inventory;
     }
 
     if (!$rows) {
-        return [];
+        return $inventory;
     }
 
-    $items = resolveItems($config, array_map(static fn ($r) => (int) $r['itemEntry'], $rows));
+    $inventory['integrity']['rows'] = count($rows);
 
-    $bySlot = [];
+    // Resolve every item template id in one go (one hotfixes query, one DB2
+    // index pass) instead of once per slot.
+    $entries = [];
     foreach ($rows as $row) {
+        if ($row['itemEntry'] !== null) {
+            $entries[] = (int) $row['itemEntry'];
+        }
+    }
+    $items = resolveItems($config, $entries);
+
+    $decorate = static function (array $row) use ($items, $guid, &$inventory): array {
         $entry = (int) $row['itemEntry'];
         $item = $items[$entry] ?? [
             'entry'          => $entry,
@@ -733,12 +819,88 @@ function getCharacterEquipment(array $config, int $guid): array
             'required_level' => 0,
             'source'         => 'unresolved',
         ];
-        $item['slot'] = (int) $row['slot'];
+
+        $item['slot']       = (int) $row['slot'];
+        $item['bag']        = (int) $row['bag'];
+        $item['item_guid']  = (int) $row['item_guid'];
+        $item['count']      = max(1, (int) $row['count']);
         $item['durability'] = (int) $row['durability'];
-        $bySlot[(int) $row['slot']] = $item;
+
+        // item_instance.owner_guid should agree with character_inventory.guid.
+        // It isn't used to find the item (character_inventory already scopes
+        // it to this character) but a mismatch means the database is out of
+        // sync, so it gets counted for the diagnostics page.
+        if ((int) $row['owner_guid'] !== $guid) {
+            $inventory['integrity']['owner_mismatch']++;
+        }
+
+        return $item;
+    };
+
+    // Pass 1: everything sitting directly on the character (bag = 0).
+    $containers = [];
+    foreach ($rows as $row) {
+        if ((int) $row['bag'] !== 0) {
+            continue;
+        }
+        if ($row['itemEntry'] === null) {
+            // character_inventory points at an item_instance row that is gone
+            $inventory['integrity']['missing_instance']++;
+            continue;
+        }
+
+        $slot = (int) $row['slot'];
+        $item = $decorate($row);
+
+        if ($slot >= INV_EQUIPMENT_FIRST && $slot <= INV_EQUIPMENT_LAST) {
+            $inventory['equipped'][$slot] = $item;
+        } elseif ($slot >= INV_PROFESSION_FIRST && $slot <= INV_PROFESSION_LAST) {
+            $inventory['profession'][$slot] = $item;
+        } elseif (($slot >= INV_BAG_FIRST && $slot <= INV_BAG_LAST) || $slot === INV_REAGENT_BAG) {
+            $containers[$item['item_guid']] = ['slot' => $slot, 'item' => $item, 'contents' => []];
+        } elseif ($slot >= INV_BACKPACK_FIRST && $slot <= INV_BACKPACK_LAST) {
+            $inventory['backpack'][$slot] = $item;
+        }
+        // bank / buyback / reagent bank slots are deliberately not shown
     }
 
-    return $bySlot;
+    // Pass 2: items inside the equipped bags.
+    foreach ($rows as $row) {
+        $bag = (int) $row['bag'];
+        if ($bag === 0) {
+            continue;
+        }
+        if ($row['itemEntry'] === null) {
+            $inventory['integrity']['missing_instance']++;
+            continue;
+        }
+        if (!isset($containers[$bag])) {
+            // inside a bank bag (or a container we didn't list) — skip it
+            $inventory['integrity']['orphan_bag']++;
+            continue;
+        }
+        $containers[$bag]['contents'][(int) $row['slot']] = $decorate($row);
+    }
+
+    foreach ($containers as $container) {
+        ksort($container['contents']);
+        $inventory['bags'][] = $container;
+    }
+    usort($inventory['bags'], static fn ($a, $b) => $a['slot'] <=> $b['slot']);
+
+    ksort($inventory['equipped']);
+    ksort($inventory['profession']);
+    ksort($inventory['backpack']);
+
+    return $inventory;
+}
+
+/**
+ * The equipped gear only (slots 0-18), as slot => item row.
+ */
+function getCharacterEquipment(array $config, int $guid): array
+{
+    return getCharacterInventory($config, $guid)['equipped'];
 }
 
 /**
@@ -1117,7 +1279,34 @@ function armoryDiagnostics(array $config): array
         if (!$sample) {
             $add($checks, 'equipment lookup', 'warn', 'no character on this realm has anything equipped yet');
         } else {
-            $equipment = getCharacterEquipment($config, (int) $sample['guid']);
+            $inventory = getCharacterInventory($config, (int) $sample['guid']);
+            $equipment = $inventory['equipped'];
+            $integrity = $inventory['integrity'];
+
+            $carried = count($inventory['backpack']);
+            foreach ($inventory['bags'] as $bag) {
+                $carried += count($bag['contents']);
+            }
+            $add($checks, 'characters -> character_inventory', 'ok', sprintf(
+                '%s: %d inventory rows — %d equipped, %d profession, %d bag(s), %d carried item(s)',
+                $sample['name'],
+                $integrity['rows'],
+                count($equipment),
+                count($inventory['profession']),
+                count($inventory['bags']),
+                $carried
+            ));
+
+            if ($integrity['missing_instance'] > 0 || $integrity['owner_mismatch'] > 0) {
+                $add($checks, 'inventory integrity', 'warn', sprintf(
+                    '%d row(s) point at an item_instance that no longer exists, %d item(s) whose owner_guid disagrees with character_inventory.guid',
+                    $integrity['missing_instance'],
+                    $integrity['owner_mismatch']
+                ), 'Left over from a crash or a manual DB edit. The Armory shows the rows character_inventory lists for this character, which is the authoritative link.');
+            } else {
+                $add($checks, 'inventory integrity', 'ok', 'every inventory row resolves to an item_instance owned by that character');
+            }
+
             $named = array_filter($equipment, static fn ($i) => $i['source'] !== 'unresolved');
             $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));
             $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped items resolved';

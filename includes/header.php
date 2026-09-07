@@ -1066,6 +1066,46 @@ $navItems = [
   .diag-hint { margin-top: 4px; color: var(--text-faint); font-size: 11px; }
   .diag-legend dd code { font-size: 11px; }
 
+  /* ---- Armory: bags ---- */
+  .bag-total {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-faint);
+    letter-spacing: 0;
+    margin-left: 8px;
+  }
+
+  .bag-group { margin-bottom: 18px; }
+  .bag-group:last-child { margin-bottom: 0; }
+
+  .bag-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .bag-head .bag-name { font-size: 13px; font-weight: 600; }
+  .bag-head .bag-meta { font-size: 11px; color: var(--text-faint); }
+
+  .bag-empty { margin: 8px 0 0; font-size: 12px; font-style: italic; color: var(--text-faint); }
+
+  ul.bag-list {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 24px;
+  }
+  @media (max-width: 600px) {
+    ul.bag-list { grid-template-columns: 1fr; }
+  }
+  ul.bag-list li { font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; }
+  ul.bag-list .item-count { color: var(--text-faint); font-size: 11px; }
+
   .roster-row .name a, .lb-name a { color: inherit; text-decoration: none; }
   .roster-row .name a:hover, .lb-name a:hover { color: var(--gold-bright); }
 </style>
