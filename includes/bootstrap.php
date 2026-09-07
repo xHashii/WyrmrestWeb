@@ -353,14 +353,18 @@ function getCharacterEquipment(array $config, int $guid): array
         return [];
     }
 
-    $world = $config['world_db_name'] ?? 'world';
+    $hotfixes = $config['hotfixes_db_name'] ?? 'hotfixes';
 
     try {
         $stmt = $pdo->prepare("
-            SELECT ci.slot, it.entry, it.name, it.Quality, it.InventoryType
+            SELECT ci.slot, it.ID AS entry, it.Display AS name, it.OverallQualityID AS Quality, it.InventoryType
             FROM character_inventory ci
             JOIN item_instance ii ON ii.guid = ci.item
-            JOIN `{$world}`.`item_template` it ON it.entry = ii.itemEntry
+            JOIN (
+                SELECT ID, Display, OverallQualityID, InventoryType
+                FROM `{$hotfixes}`.`item_sparse`
+                GROUP BY ID
+            ) it ON it.ID = ii.itemEntry
             WHERE ci.guid = ? AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
             ORDER BY ci.slot ASC
         ");
