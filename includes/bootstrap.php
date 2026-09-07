@@ -344,7 +344,7 @@ function findCharacterByName(array $config, string $name): ?array
 
 /**
  * Equipped items (bag = 0, slots 0-18) for a character guid, joined
- * against item_template (world db) for name/quality. Indexed by slot.
+ * against item_sparse (hotfixes db) for name/quality. Indexed by slot.
  */
 function getCharacterEquipment(array $config, int $guid): array
 {
@@ -361,7 +361,7 @@ function getCharacterEquipment(array $config, int $guid): array
             FROM character_inventory ci
             JOIN item_instance ii ON ii.guid = ci.item
             JOIN (
-                SELECT ID, Display, OverallQualityID, InventoryType
+                SELECT ID, ANY_VALUE(Display) AS Display, ANY_VALUE(OverallQualityID) AS OverallQualityID, ANY_VALUE(InventoryType) AS InventoryType
                 FROM `{$hotfixes}`.`item_sparse`
                 GROUP BY ID
             ) it ON it.ID = ii.itemEntry
