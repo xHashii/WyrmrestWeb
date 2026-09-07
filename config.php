@@ -38,12 +38,12 @@ return [
      * who's currently online, the leaderboard, and the Armory (character/
      * guild lookup). Leave 'db_host' blank to hide all of those sections.
      *
-     * The Armory also reads `item_template` from the world database and
+     * The Armory also reads `item_sparse` from the hotfixes database and
      * `account_access` from the auth database (to hide GM characters) —
      * same user, just needs SELECT granted on those two tables too:
      *   CREATE USER 'wow_readonly'@'%' IDENTIFIED BY 'SomeStrongPassword';
      *   GRANT SELECT ON characters.* TO 'wow_readonly'@'%';
-     *   GRANT SELECT ON world.item_template TO 'wow_readonly'@'%';
+     *   GRANT SELECT ON hotfixes.item_sparse TO 'wow_readonly'@'%';
      *   GRANT SELECT ON auth.account_access TO 'wow_readonly'@'%';
      *   FLUSH PRIVILEGES;
      * ('%' rather than 'localhost' because PHP connects via 127.0.0.1,
@@ -56,6 +56,7 @@ return [
     'db_pass' => 'qazxswer12',
     'world_db_name' => 'world', // database name for item_template lookups (Armory)
     'auth_db_name'  => 'auth',  // database name for account_access (Armory GM hiding)
+    'hotfixes_db_name' => 'hotfixes', // database name for item_sparse (Armory item names/quality)
     'realm_id'      => 1,       // matches your realm's ID in the auth db
     'hide_game_masters' => true, // hide GM characters/guild members from the Armory
 

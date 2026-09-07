@@ -317,12 +317,12 @@ function findCharacterByName(array $config, string $name): ?array
             SELECT c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online,
                    c.totaltime, c.zone, c.money,
                    g.guildid, g.name AS guild_name, gr.rname AS guild_rank,
-                   aa.gmlevel
+                   aa.SecurityLevel AS gmlevel
             FROM characters c
             LEFT JOIN guild_member gm ON gm.guid = c.guid
             LEFT JOIN guild g ON g.guildid = gm.guildid
             LEFT JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.id = c.account AND aa.RealmID IN (-1, {$realmId})
+            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
             WHERE c.name = ?
             LIMIT 1
         ");
@@ -344,7 +344,7 @@ function findCharacterByName(array $config, string $name): ?array
 
 /**
  * Equipped items (bag = 0, slots 0-18) for a character guid, joined
- * against item_template (world db) for name/quality. Indexed by slot.
+ * against item_sparse (hotfixes db) for name/quality. Indexed by slot.
  */
 function getCharacterEquipment(array $config, int $guid): array
 {
@@ -353,14 +353,18 @@ function getCharacterEquipment(array $config, int $guid): array
         return [];
     }
 
-    $world = $config['world_db_name'] ?? 'world';
+    $hotfixes = $config['hotfixes_db_name'] ?? 'hotfixes';
 
     try {
         $stmt = $pdo->prepare("
-            SELECT ci.slot, it.entry, it.name, it.Quality, it.InventoryType
+            SELECT ci.slot, it.ID AS entry, it.Display AS name, it.OverallQualityID AS Quality, it.InventoryType
             FROM character_inventory ci
             JOIN item_instance ii ON ii.guid = ci.item
-            JOIN `{$world}`.`item_template` it ON it.entry = ii.itemEntry
+            JOIN (
+                SELECT ID, ANY_VALUE(Display) AS Display, ANY_VALUE(OverallQualityID) AS OverallQualityID, ANY_VALUE(InventoryType) AS InventoryType
+                FROM `{$hotfixes}`.`item_sparse`
+                GROUP BY ID
+            ) it ON it.ID = ii.itemEntry
             WHERE ci.guid = ? AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
             ORDER BY ci.slot ASC
         ");
@@ -463,11 +467,11 @@ function getGuildMembers(array $config, int $guildId): array
             FROM guild_member gm
             JOIN characters c ON c.guid = gm.guid
             JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.id = c.account AND aa.RealmID IN (-1, {$realmId})
+            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
             WHERE gm.guildid = ?
         ";
         if ($hideGms) {
-            $sql .= ' AND (aa.id IS NULL OR aa.gmlevel = 0)';
+            $sql .= ' AND (aa.AccountID IS NULL OR aa.SecurityLevel = 0)';
         }
         $sql .= ' ORDER BY gr.rid ASC, c.level DESC, c.name ASC';
 
