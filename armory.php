@@ -4,7 +4,7 @@ require __DIR__ . '/includes/bootstrap.php';
 $query = trim($_GET['q'] ?? '');
 $type = ($_GET['type'] ?? 'character') === 'guild' ? 'guild' : 'character';
 
-$queryLength = mb_strlen($query);
+$queryLength = armoryLength($query);
 $tooShort = $query !== '' && $queryLength < ARMORY_MIN_SEARCH_LENGTH;
 
 $characterResults = [];

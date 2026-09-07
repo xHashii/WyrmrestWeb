@@ -381,6 +381,15 @@ function armoryLower(string $value): string
 }
 
 /**
+ * Length in characters, not bytes — so "Lún" counts as three. Falls back to
+ * strlen() on the rare install without mbstring.
+ */
+function armoryLength(string $value): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+}
+
+/**
  * TrinityCore stores `characters`.`name` with the utf8mb4_bin collation,
  * which compares byte-for-byte: "sylea" does not match "Sylea", not with =
  * and not with LIKE. Every name comparison therefore goes through this
@@ -510,7 +519,7 @@ function searchCharacters(array $config, string $query, int $limit = 30): array
 {
     $query = trim($query);
     $pdo = connectCharactersDb($config);
-    if (!$pdo || mb_strlen($query) < ARMORY_MIN_SEARCH_LENGTH) {
+    if (!$pdo || armoryLength($query) < ARMORY_MIN_SEARCH_LENGTH) {
         return [];
     }
 
@@ -546,7 +555,7 @@ function searchGuilds(array $config, string $query, int $limit = 30): array
 {
     $query = trim($query);
     $pdo = connectCharactersDb($config);
-    if (!$pdo || mb_strlen($query) < ARMORY_MIN_SEARCH_LENGTH) {
+    if (!$pdo || armoryLength($query) < ARMORY_MIN_SEARCH_LENGTH) {
         return [];
     }
 

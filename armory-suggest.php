@@ -25,7 +25,7 @@ $payload = [
     'results'    => [],
 ];
 
-if (mb_strlen($query) >= ARMORY_MIN_SEARCH_LENGTH) {
+if (armoryLength($query) >= ARMORY_MIN_SEARCH_LENGTH) {
     if ($type === 'guild') {
         foreach (searchGuilds($config, $query, 10) as $g) {
             $payload['results'][] = [
