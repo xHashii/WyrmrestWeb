@@ -816,14 +816,18 @@ $navItems = [
     display: flex;
     gap: 10px;
     margin-bottom: 4px;
+    align-items: stretch;
   }
 
   .armory-search input[type="text"] {
     margin-bottom: 0;
     flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
   }
 
   .armory-search select {
+    flex: 0 0 auto;
     background: #12100b;
     border: 1px solid var(--border);
     border-radius: 3px;
@@ -831,10 +835,12 @@ $navItems = [
     font-size: 14px;
     font-family: inherit;
     padding: 0 10px;
+    height: auto;
   }
 
   .armory-search button {
     flex: 0 0 auto;
+    width: auto;
     padding: 0 20px;
     background: linear-gradient(180deg, var(--gold-bright), var(--gold));
     border: none;
@@ -843,7 +849,14 @@ $navItems = [
     font-family: 'Cinzel', serif;
     font-weight: 700;
     font-size: 13px;
+    white-space: nowrap;
     cursor: pointer;
+    transition: filter 0.15s, transform 0.15s;
+  }
+
+  .armory-search button:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
   }
 
   .search-result-row {

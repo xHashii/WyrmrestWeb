@@ -317,12 +317,12 @@ function findCharacterByName(array $config, string $name): ?array
             SELECT c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online,
                    c.totaltime, c.zone, c.money,
                    g.guildid, g.name AS guild_name, gr.rname AS guild_rank,
-                   aa.gmlevel
+                   aa.SecurityLevel AS gmlevel
             FROM characters c
             LEFT JOIN guild_member gm ON gm.guid = c.guid
             LEFT JOIN guild g ON g.guildid = gm.guildid
             LEFT JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.id = c.account AND aa.RealmID IN (-1, {$realmId})
+            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
             WHERE c.name = ?
             LIMIT 1
         ");
@@ -463,11 +463,11 @@ function getGuildMembers(array $config, int $guildId): array
             FROM guild_member gm
             JOIN characters c ON c.guid = gm.guid
             JOIN guild_rank gr ON gr.guildid = gm.guildid AND gr.rid = gm.`rank`
-            LEFT JOIN `{$auth}`.`account_access` aa ON aa.id = c.account AND aa.RealmID IN (-1, {$realmId})
+            LEFT JOIN `{$auth}`.`account_access` aa ON aa.AccountID = c.account AND aa.RealmID IN (-1, {$realmId})
             WHERE gm.guildid = ?
         ";
         if ($hideGms) {
-            $sql .= ' AND (aa.id IS NULL OR aa.gmlevel = 0)';
+            $sql .= ' AND (aa.AccountID IS NULL OR aa.SecurityLevel = 0)';
         }
         $sql .= ' ORDER BY gr.rid ASC, c.level DESC, c.name ASC';
 
