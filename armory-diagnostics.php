@@ -109,27 +109,39 @@ require __DIR__ . '/includes/header.php';
         </tbody>
       </table>
 
-      <h2 style="margin-top: 24px;">Equipped items</h2>
+      <?php if ($trace['inventory'] !== null): ?>
+        <?php $saved = $trace['inventory']; ?>
+        <h2 style="margin-top: 24px;">Saved equipment sources</h2>
+        <dl class="stats diag-legend">
+          <div><dt>character_inventory</dt><dd><?= htmlspecialchars($saved['status']['inventory']) ?> · <?= $saved['integrity']['rows'] ?> inventory rows</dd></div>
+          <div><dt>item_instance links</dt><dd><?= $saved['integrity']['missing_instance'] ?> missing/unreadable · <?= $saved['integrity']['owner_mismatch'] ?> owner mismatches</dd></div>
+          <div><dt>equipmentCache</dt><dd><?= htmlspecialchars($saved['status']['cache']) ?> · <?= $saved['integrity']['cache_slots'] ?> saved appearances · <?= $saved['integrity']['cache_fallback'] ?> used as fallback</dd></div>
+        </dl>
+        <p class="roster-empty" style="margin-top: 12px;">The cache contains appearance/display IDs, not item IDs. It can show how gear looked at the last character save, but cannot identify the exact item or its stats. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
+      <?php endif; ?>
+      <h2 style="margin-top: 24px;">Equipped items and appearances</h2>
       <?php if (!$trace['equipment']): ?>
         <p class="roster-empty">
-          Nothing in <code>character_inventory</code> with <code>bag = 0</code> and
-          <code>slot</code> between 0 and 18 for this character.
+          No equipped items or cached appearances could be displayed. This is not
+          proof that the character has no gear in-game; check the saved sources above.
         </p>
       <?php else: ?>
         <table class="guild-roster diag-table">
           <thead>
-            <tr><th>slot</th><th>itemEntry</th><th>name</th><th>resolved from</th></tr>
+            <tr><th>slot</th><th>itemEntry</th><th>display ID</th><th>name / appearance</th><th>read from</th></tr>
           </thead>
           <tbody>
             <?php foreach ($trace['equipment'] as $item): ?>
               <tr>
                 <td><?= htmlspecialchars($item['slot']) ?></td>
-                <td><?= $item['entry'] ?></td>
+                <td><?= $item['entry'] > 0 ? $item['entry'] : 'Unknown' ?></td>
+                <td><?= $item['display_id'] > 0 ? $item['display_id'] : '—' ?></td>
                 <td><?= htmlspecialchars($item['name']) ?></td>
                 <td>
-                  <span class="diag-pill <?= $item['source'] === 'unresolved' ? 'fail' : 'ok' ?>">
-                    <?= htmlspecialchars($item['source']) ?>
+                  <span class="diag-pill <?= $item['equipment_source'] === 'equipment-cache' ? 'warn' : ($item['source'] === 'unresolved' ? 'fail' : 'ok') ?>">
+                    <?= htmlspecialchars($item['equipment_source']) ?>
                   </span>
+                  <div class="diag-hint"><?= htmlspecialchars($item['source']) ?></div>
                 </td>
               </tr>
             <?php endforeach; ?>
@@ -152,8 +164,16 @@ require __DIR__ . '/includes/header.php';
     <div>
       <dt>Slot map (3.4.3)</dt>
       <dd>bag 0: 0-18 equipped · 19-29 profession · 30-33 bags · 34 reagent bag ·
-          35-62 backpack · 63+ bank/buyback (not shown). Any other
+          35-58 backpack · 59+ bank/buyback (not shown). Any other
           <code>bag</code> value is the item guid of the container the item is in.</dd>
+    </div>
+    <div>
+      <dt>Saved character appearance</dt>
+      <dd><code>characters.equipmentCache</code> — fallback only. On this core: 34 slots, 5 values each; display IDs are resolved through <code>ItemAppearance</code>, never treated as item IDs.</dd>
+    </div>
+    <div>
+      <dt>Item icons</dt>
+      <dd><code>Item</code> + <code>ItemModifiedAppearance</code> + <code>ItemAppearance</code> CSVs supply icon FileDataIDs and model display IDs. Local <code>images/items/&lt;FileDataID&gt;.png</code> files take priority over remote icons.</dd>
     </div>
     <div>
       <dt>Game Master filter</dt>

@@ -1109,8 +1109,11 @@ $navItems = [
   .roster-row .name a, .lb-name a { color: inherit; text-decoration: none; }
   .roster-row .name a:hover, .lb-name a:hover { color: var(--gold-bright); }
 </style>
+<?php foreach ($pageStylesheets ?? [] as $stylesheet): ?>
+<link rel="stylesheet" href="<?= htmlspecialchars($stylesheet) ?>">
+<?php endforeach; ?>
 </head>
-<body>
+<body<?= !empty($bodyClass) ? ' class="' . htmlspecialchars($bodyClass) . '"' : '' ?>>
   <nav class="navbar">
     <div class="navbar-inner">
       <a class="brand" href="index.php"><?= htmlspecialchars($config['server_name']) ?></a>

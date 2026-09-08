@@ -108,6 +108,17 @@ return [
      */
     'show_bag_contents' => true,
 
+    // Local images/items/<IconFileDataID>.png/.jpg/.webp always win. Otherwise
+    // load real item icons from Wowhead using data/item-icon-names.json.
+    // Set false for a fully local deployment; slot outlines/details still work.
+    'remote_item_icons' => true,
+
+    // Optional checkbox on character profiles. Model libraries load only when
+    // enabled by a visitor. PHP cURL + outbound HTTPS are required for the
+    // fixed-origin model-asset endpoint; its cache is capped at 128 MiB.
+    // Equipment lookup never depends on 3D being available.
+    'enable_3d_viewer' => true,
+
     /**
      * When true, a "Connection details" toggle appears in the status bar
      * showing the raw SOAP error if the realm is offline, and the Armory
