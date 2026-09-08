@@ -211,18 +211,18 @@ A native PHP armory — ported from the uploaded Node.js/TypeScript
 the same `characters` DB connection as "Who's Online" and the
 leaderboard.
 
-**What's included:** character search (type the first three letters and
-get every name that starts with them, with live suggestions), a
+**What's included:** character search (type at least two letters from the start
+of a name, with live suggestions and paginated results at every level), a
 character page (level, race, class, faction, guild, zone, played time,
-online status, average item level, and equipped gear by slot with
-quality colors and item levels), guild search, a guild roster page, and
+online status, average item level, and an icon-based equipment paper doll
+with quality borders, slot details and an optional 3D preview), guild search, a guild roster page, and
 a diagnostics page that checks every database and file the Armory needs.
 
 **What's not included** (present in the original Node app, cut here to
 keep this a reasonable scope): talent trees, glyphs, achievements,
-PvP/arena ladder, transmog, and item icons — the icon images would have
-to be extracted from the game client, which this project doesn't do.
-Equipped items show as quality-colored text with their item level.
+PvP/arena ladder, and full transmog/character customization rendering. The
+optional 3D viewer uses a base model for the race/body type, not an exact
+reconstruction of face, hair or other customization choices.
 
 ### Files
 
@@ -230,7 +230,13 @@ Equipped items show as quality-colored text with their item level.
 armory.php              Search page (character or guild, by name prefix)
 armory-suggest.php      JSON type-ahead endpoint used by the search box
 armory-diagnostics.php  "why doesn't my character show up" checker
-character.php           Character profile + equipment
+character.php           Character profile + equipment paper doll
+armory-model-asset.php  Fixed-origin, cached assets for the optional 3D viewer
+assets/character.*     Responsive profile styles, slot details and viewer controls
+includes/equipment.php  Saved-appearance parser and equipment layout/model helpers
+includes/item-visuals.php  Icons/display IDs from the bundled DB2 exports
+data/item-icon-names.json  FileDataID -> icon filename map
+images/items/          Small bundled icon set + optional locally extracted icons
 guild.php               Guild roster
 includes/itemdb.php     Item names from the bundled DB2 export
 cache/                  Generated item index (safe to delete, rebuilt on demand)
@@ -278,7 +284,7 @@ counts them.)
 `bag` is `0` when the item sits directly on the character, otherwise it's the
 `item_instance.guid` of the container it's inside — which is how bag contents
 are attached to the right bag. `slot` then means, on 3.4.3
-(`Player.h`, branch `3.4.3` — these are **not** the 3.3.5 numbers, where bags
+(`Player.h` in [the configured core](https://github.com/xHashii/3.4.3_Source/blob/main/src/server/game/Entities/Player/Player.h) — these are **not** the 3.3.5 numbers, where bags
 started at 19):
 
 | Slots | Meaning | Shown |
@@ -287,12 +293,12 @@ started at 19):
 | 19-29 | profession tools/gear | "Profession gear" |
 | 30-33 | equipped bags | "Bags" |
 | 34 | reagent bag | "Bags" |
-| 35-62 | backpack | "Bags" |
-| 63-90 | bank | no |
-| 91-97 | bank bags | no |
-| 98-109 | buyback | no |
-| 110-207 | reagent bank | no |
-| 208-210 | child equipment | no |
+| 35-58 | backpack | "Bags" |
+| 59-86 | bank | no |
+| 87-93 | bank bags | no |
+| 94-105 | buyback | no |
+| 106-137 | keyring | no |
+| 138-140 | child equipment | no |
 
 Bag and backpack contents can be switched off with
 `'show_bag_contents' => false` in `config.php`; bank, buyback and reagent-bank
@@ -319,6 +325,92 @@ So item entries are resolved in this order:
 To swap in a newer client export, drop the new
 `ItemSparse.<build>.csv` into `db2/`; the index rebuilds itself.
 
+### Equipped items versus cached appearances
+
+The primary source is still `character_inventory` joined to `item_instance`
+**by instance guid**, never by item template id. Equipment is `bag = 0`, slots
+0–18. Items owned by a character are not necessarily equipped: bank, mail and
+bag items must not be placed into gear slots just because `owner_guid` matches.
+
+If item-instance details cannot be queried, the Armory retries the inventory
+locations separately so occupied slots do not disappear. An unknown/custom
+item or broken instance link remains visible as an occupied slot.
+
+There is also a read-only fallback: **`characters.equipmentCache`**. In this
+core, `Player::SaveToDB` writes **34 slots × 5 unsigned integers**:
+
+```
+inventoryType displayId enchantVisual subclass secondaryModifiedAppearanceId
+```
+
+These are **appearance/display IDs, not item IDs**. Only the first 19 slots
+are equipment. The parser rejects malformed/unsupported formats instead of
+mistaking display IDs, enchantments or bag entries for item templates.
+
+A cache-only slot can recover an icon through `ItemAppearance`, but not an
+exact item name, rarity or stats: multiple items share an appearance, and the
+cache may include a transmog. Such slots have a **dashed border and C badge**,
+an explicit saved-appearance label, and do not contribute to average item
+level or link to a guessed Wowhead item. Valid inventory records always win.
+Cached entries do not fill empty slots in an otherwise readable loadout; that
+would resurrect stale unequipped items. They can fill an occupied slot with a
+broken instance link, or an entirely unavailable equipped loadout.
+
+This website **does not repair or write game inventory data**. The worldserver
+saves it. After changing gear, log out of the character and refresh the profile.
+If it is still missing, open `armory-diagnostics.php?name=YourCharacter`: the
+tracer reports inventory row counts, missing/unreadable instances, cache
+availability, and exactly which source supplied each displayed slot. Query
+failure is no longer described as “nothing equipped.”
+
+### Icons and profile layout
+
+Profiles use the in-game layout: eight slots down each side, with main hand,
+off hand and ranged along the bottom. Every slot is rendered, including empty
+slots; native `<details>` controls support pointer, keyboard and touch input.
+Character statistics, profession gear and carried bags remain available below.
+
+`Item.*.csv` supplies icon FileDataIDs. `ItemModifiedAppearance.*.csv` links
+item templates to `ItemAppearance.*.csv`, which supplies model display IDs and
+appearance icons. These visual lookups are cached in `cache/item-visuals-*.json`
+and rebuild when the exports change. A non-writable cache directory falls back
+to reading the CSVs; it does not hide equipment.
+
+A small set of original starter/common gear icons is bundled in `images/items/`.
+Other icons use the FileDataID -> filename map in `data/item-icon-names.json`
+and the Wowhead icon CDN. A FileDataID is **not** a Wowhead icon filename.
+Missing images fall back to local slot outlines while retaining item details.
+For fully local icons, put extracted `.png`, `.jpg` or `.webp` files at
+`images/items/<FileDataID>.<extension>`; local files always take priority.
+Set `'remote_item_icons' => false` to disable external icon requests.
+
+To refresh the filename map after replacing the client export, download a
+[community listfile](https://github.com/wowdev/wow-listfile) and run:
+
+```sh
+python3 tools/build-item-icons.py /path/to/community-listfile.csv
+```
+
+See `images/items/README.md` and `data/ASSET-SOURCES.md` for asset sources.
+
+### Optional 3D preview
+
+`'enable_3d_viewer' => true` enables the checkbox. The viewer is **off initially**
+and only loads jQuery and Wowhead's classic `ZamModelViewer` after a visitor opts
+in. Item lookup, icons and slot details work independently of JavaScript/WebGL
+and the model provider. Disabling the checkbox disposes the loaded viewer.
+
+Model data uses the same-origin `armory-model-asset.php` endpoint (no extra Node
+server or browser-facing localhost URLs). It requires PHP **cURL**, outbound
+HTTPS access to `wow.zamimg.com`, and optionally a writable `cache/` directory.
+The endpoint permits only model/texture paths below that fixed public provider,
+rejects traversal and arbitrary URLs, does not follow redirects, bounds each
+response to 16 MiB / 12 seconds, and caps its generated cache at 128 MiB.
+Metadata, shaders and models are not bundled. External service availability and
+custom item/appearance support can vary; loading failures are explained inline
+without removing equipped items. Set `enable_3d_viewer` to false to disable the
+viewer and its asset endpoint entirely.
+
 ### Name matching
 
 `characters`.`name` uses the **`utf8mb4_bin`** collation, which compares
@@ -329,9 +421,19 @@ profile work in any capitalisation. Search results link by `guid`
 (`character.php?guid=123`), so clicking a result can't fail on spelling;
 `character.php?name=Sylea` still works for typed URLs.
 
-Searches are prefix searches with a three-character minimum
-(`ARMORY_MIN_SEARCH_LENGTH` in `includes/bootstrap.php`), and `%`/`_`
-typed by a visitor are escaped rather than treated as wildcards.
+Searches are prefix searches with a two-character minimum
+(`ARMORY_MIN_SEARCH_LENGTH` in `includes/bootstrap.php`), so even two-letter
+character names can be found. `%`/`_` typed by a visitor are escaped rather
+than treated as wildcards.
+
+**All character levels are searchable, including level 1**, whether online
+or offline, with no requirement for played time, equipment or guild membership.
+Exact names come first, then matches in alphabetical order (not highest level
+first). The search page shows 30 characters at a time with Previous/Next links
+so no matches are lost to a result cap; live suggestions show up to 10.
+Deleted characters remain hidden. With `hide_game_masters` enabled, GM accounts
+are excluded **before** pagination, so they cannot crowd regular characters
+out of the results.
 
 ### Setup
 
@@ -380,3 +482,46 @@ deleted or on a GM account, and each equipped item with the source its
 name came from. Set `'debug' => true` in `config.php` to see full error
 messages (they're hidden from visitors otherwise); with debug on, the
 Armory pages also print any database problem they hit inline.
+
+### Search regression tests
+
+`tests/armory-search.php` exercises level 1 / never-played characters,
+two-letter and case-insensitive names, GM realm scoping, suggestion limits,
+and pagination past 200 matches. It also checks direct profile visibility
+and the existing missing-auth / missing-deleteDate fallbacks.
+
+Run with PHP and `pdo_mysql` against a **dedicated MySQL/MariaDB test database**.
+Set `ARMORY_TEST_DB_NAME` and `ARMORY_TEST_DB_USER`; optional settings are
+`ARMORY_TEST_DB_HOST` (default `127.0.0.1`), `ARMORY_TEST_DB_PORT` (default `3306`)
+and `ARMORY_TEST_DB_PASS`. The test user needs `CREATE TEMPORARY TABLES` and
+`SELECT` on that test database. Fixtures use only connection-local temporary
+tables and never modify existing rows. Run each scenario in a fresh process:
+
+```sh
+php tests/armory-search.php
+php tests/armory-search.php no-delete-date
+php tests/armory-search.php no-auth
+php tests/armory-search.php show-gms
+```
+
+### Equipment regression tests
+
+Pure PHP/CSV tests (no database or network required):
+
+```sh
+php tests/equipment.php
+```
+
+Database integration tests, using the same `ARMORY_TEST_DB_*` settings above
+and a dedicated, otherwise empty MySQL/MariaDB test database:
+
+```sh
+php tests/equipment-inventory.php
+```
+
+The integration script first runs the normal search checks and reuses their
+connection-local temporary fixtures. It covers real instance-to-template links,
+cache-only gear, stale-cache precedence, broken instance rows, unknown custom
+items, missing tables/columns, GM profile hiding, source diagnostics and bank
+slot exclusion. Neither suite connects to the live realm unless explicitly
+misconfigured with live test database settings; always use a dedicated test DB.

@@ -146,7 +146,7 @@ function itemDb2BuildIndex(array $config, bool $force = false): array
         return ['ok' => false, 'count' => 0, 'error' => "Could not read {$paths['csv']}"];
     }
 
-    $header = fgetcsv($handle);
+    $header = fgetcsv($handle, 0, ',', '"', '');
     $cols = is_array($header) ? itemSparseColumns($header) : null;
     if ($cols === null) {
         fclose($handle);
@@ -164,7 +164,7 @@ function itemDb2BuildIndex(array $config, bool $force = false): array
 
     $records = [];
     $offset = 0;
-    while (($row = fgetcsv($handle)) !== false) {
+    while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
         if (!isset($row[$cols['id']])) {
             continue;
         }
@@ -327,7 +327,7 @@ function itemDb2ScanCsv(array $config, array $entries): array
         return [];
     }
 
-    $header = fgetcsv($handle);
+    $header = fgetcsv($handle, 0, ',', '"', '');
     $cols = is_array($header) ? itemSparseColumns($header) : null;
     if ($cols === null) {
         fclose($handle);
@@ -336,7 +336,7 @@ function itemDb2ScanCsv(array $config, array $entries): array
 
     $wanted = array_flip($entries);
     $found = [];
-    while (($row = fgetcsv($handle)) !== false) {
+    while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
         $id = (int) ($row[$cols['id']] ?? 0);
         if (!isset($wanted[$id])) {
             continue;

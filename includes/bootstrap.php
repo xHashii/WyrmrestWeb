@@ -2,6 +2,8 @@
 session_start();
 $config = require __DIR__ . '/../config.php';
 require_once __DIR__ . '/itemdb.php';
+require_once __DIR__ . '/item-visuals.php';
+require_once __DIR__ . '/equipment.php';
 
 /**
  * Every database call in here is written to fail softly — a missing table or
@@ -288,8 +290,8 @@ function getOnlineClassBreakdown(array $config): array
  * its failure only costs you that one detail.
  * ============================================================ */
 
-/** Minimum number of characters required before we run a name search. */
-const ARMORY_MIN_SEARCH_LENGTH = 3;
+/** Two letters also allows the shortest normal character names to be found. */
+const ARMORY_MIN_SEARCH_LENGTH = 2;
 
 /** Escape character used with LIKE (avoids backslash/sql_mode surprises). */
 const ARMORY_LIKE_ESCAPE = '!';
@@ -311,12 +313,12 @@ const ARMORY_LIKE_ESCAPE = '!';
  *     19 - 29    profession tools   (PROFESSION_SLOT_*)
  *     30 - 33    equipped bags      (INVENTORY_SLOT_BAG_START .. _END)
  *     34         reagent bag        (REAGENT_BAG_SLOT_START)
- *     35 - 62    backpack           (INVENTORY_SLOT_ITEM_START .. _END)
- *     63 - 90    bank               (BANK_SLOT_ITEM_START .. _END)
- *     91 - 97    bank bags          (BANK_SLOT_BAG_START .. _END)
- *     98 - 109   buyback            (BUYBACK_SLOT_START .. _END)
- *    110 - 207   reagent bank       (REAGENT_SLOT_START .. _END)
- *    208 - 210   child equipment    (CHILD_EQUIPMENT_SLOT_START .. _END)
+ *     35 - 58    backpack           (INVENTORY_SLOT_ITEM_START .. _END)
+ *     59 - 86    bank               (BANK_SLOT_ITEM_START .. _END)
+ *     87 - 93    bank bags          (BANK_SLOT_BAG_START .. _END)
+ *     94 - 105   buyback            (BUYBACK_SLOT_START .. _END)
+ *    106 - 137   keyring            (KEYRING_SLOT_START .. _END)
+ *    138 - 140   child equipment    (CHILD_EQUIPMENT_SLOT_START .. _END)
  *
  * Values taken from TrinityCore's Player.h on the 3.4.3 branch — note they
  * are NOT the 3.3.5 numbers (where bags started at 19), so anything that
@@ -330,9 +332,9 @@ const INV_BAG_FIRST        = 30;
 const INV_BAG_LAST         = 33;
 const INV_REAGENT_BAG      = 34;
 const INV_BACKPACK_FIRST   = 35;
-const INV_BACKPACK_LAST    = 62;
-const INV_BANK_FIRST       = 63;
-const INV_BANK_LAST        = 97;
+const INV_BACKPACK_LAST    = 58;
+const INV_BANK_FIRST       = 59;
+const INV_BANK_LAST        = 93;
 
 /**
  * Equipment slot id (character_inventory.slot with bag = 0) => label.
@@ -563,11 +565,12 @@ function isHiddenGmCharacter(array $config, int $accountId): bool
 }
 
 /**
- * Character name search for the Armory search box: type at least three
- * characters and get every character whose name starts with them,
- * regardless of capitalisation.
+ * Character name search for the Armory search box, at every level (including
+ * level 1). Exact names come first, then alphabetical prefix matches — level,
+ * online status, played time and equipment do not affect visibility or order.
+ * Limit/offset page through all matches without letting hidden GMs use slots.
  */
-function searchCharacters(array $config, string $query, int $limit = 30): array
+function searchCharacters(array $config, string $query, int $limit = 30, int $offset = 0): array
 {
     $query = trim($query);
     $pdo = connectCharactersDb($config);
@@ -578,26 +581,32 @@ function searchCharacters(array $config, string $query, int $limit = 30): array
     [$match, $params] = armoryNameMatch('c.name', $query, true);
     $params['exact'] = armoryLower($query);
     $limit = max(1, min(200, $limit));
+    $offset = max(0, $offset);
+
+    // Read auth separately so a missing GRANT still cannot break the search,
+    // but exclude known GM accounts BEFORE LIMIT/OFFSET. Filtering afterwards
+    // let GM rows crowd out regular characters (or leave an empty result).
+    $gmIds = !empty($config['hide_game_masters']) ? gmAccountIds($config) : [];
+    $gmFilter = '';
+    if ($gmIds) {
+        $gmFilter = ' AND c.account NOT IN (' . implode(',', array_map('intval', array_keys($gmIds))) . ')';
+    }
 
     try {
         $stmt = $pdo->prepare("
             SELECT c.guid, c.account, c.name, c.race, c.class, c.gender, c.level, c.online, c.zone
             FROM characters c
-            WHERE {$match}" . armoryAliveFilter($config) . "
+            WHERE {$match}" . armoryAliveFilter($config) . $gmFilter . "
             ORDER BY CASE WHEN LOWER(c.name) = :exact THEN 0 ELSE 1 END,
-                     c.level DESC, c.name ASC
-            LIMIT {$limit}
+                     LOWER(c.name) ASC, c.name ASC, c.guid ASC
+            LIMIT {$limit} OFFSET {$offset}
         ");
         $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (\Throwable $e) {
         dbNoteError('character name search', $e);
         return [];
     }
-
-    return array_values(array_filter($rows, static function (array $row) use ($config) {
-        return !isHiddenGmCharacter($config, (int) $row['account']);
-    }));
 }
 
 /**
@@ -753,29 +762,27 @@ function getCharacterGuild(array $config, int $guid): ?array
  *   equipped   slot => item (0-18)
  *   profession slot => item (19-29)
  *   bags       list of ['slot', 'item', 'contents' => slot => item]
- *   backpack   slot => item (35-62)
+ *   backpack   slot => item (35-58)
+ *   status     availability of the inventory query and optional appearance cache
  *   integrity  counters for armory-diagnostics.php
  */
 function getCharacterInventory(array $config, int $guid): array
 {
     $inventory = [
-        'equipped'   => [],
-        'profession' => [],
-        'bags'       => [],
-        'backpack'   => [],
-        'integrity'  => ['rows' => 0, 'missing_instance' => 0, 'owner_mismatch' => 0, 'orphan_bag' => 0],
+        'equipped' => [], 'profession' => [], 'bags' => [], 'backpack' => [],
+        'status' => ['inventory' => 'unavailable', 'cache' => 'unavailable'],
+        'integrity' => ['rows' => 0, 'missing_instance' => 0, 'owner_mismatch' => 0,
+            'orphan_bag' => 0, 'cache_slots' => 0, 'cache_fallback' => 0],
     ];
-
     $pdo = connectCharactersDb($config);
     if (!$pdo || $guid <= 0) {
         return $inventory;
     }
 
+    $rows = [];
     try {
-        // Joined through `characters` on purpose: the guid the page was asked
-        // for has to exist as a character before any of its inventory rows
-        // count, and item_instance is reached through character_inventory.item
-        // (its PRIMARY KEY), so an item can only ever appear under one owner.
+        // Inventory locations are authoritative; itemEntry is a TEMPLATE id,
+        // while ci.item -> ii.guid is the INSTANCE id. Never join them by entry.
         $stmt = $pdo->prepare('
             SELECT ci.bag, ci.slot, ci.item AS item_guid,
                    ii.itemEntry, ii.count, ii.durability, ii.owner_guid
@@ -787,71 +794,73 @@ function getCharacterInventory(array $config, int $guid): array
         ');
         $stmt->execute(['guid' => $guid]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $inventory['status']['inventory'] = $rows ? 'available' : 'empty';
     } catch (\Throwable $e) {
-        dbNoteError('read character inventory', $e);
-        return $inventory;
+        // A missing item_instance table/GRANT must not erase known occupied
+        // slots. Retry just the locations, then use the appearance cache below.
+        dbNoteError('read character inventory and item instances', $e);
+        try {
+            $stmt = $pdo->prepare('
+                SELECT ci.bag, ci.slot, ci.item AS item_guid,
+                       NULL AS itemEntry, NULL AS count, NULL AS durability, NULL AS owner_guid
+                FROM characters c
+                JOIN character_inventory ci ON ci.guid = c.guid
+                WHERE c.guid = :guid
+                ORDER BY ci.bag ASC, ci.slot ASC
+            ');
+            $stmt->execute(['guid' => $guid]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $inventory['status']['inventory'] = $rows ? 'partial' : 'empty';
+        } catch (\Throwable $locationError) {
+            dbNoteError('read character inventory locations', $locationError);
+        }
     }
-
-    if (!$rows) {
-        return $inventory;
-    }
-
     $inventory['integrity']['rows'] = count($rows);
 
-    // Resolve every item template id in one go (one hotfixes query, one DB2
-    // index pass) instead of once per slot.
+    $cache = readCharacterEquipmentCache($config, $guid);
+    $inventory['status']['cache'] = $cache['status'];
+    $inventory['integrity']['cache_slots'] = count($cache['slots']);
+
     $entries = [];
     foreach ($rows as $row) {
-        if ($row['itemEntry'] !== null) {
+        if ($row['itemEntry'] === null) {
+            $inventory['integrity']['missing_instance']++;
+        } else {
             $entries[] = (int) $row['itemEntry'];
+            if ((int) $row['owner_guid'] !== $guid) {
+                $inventory['integrity']['owner_mismatch']++;
+            }
         }
     }
     $items = resolveItems($config, $entries);
-
-    $decorate = static function (array $row) use ($items, $guid, &$inventory): array {
+    $visuals = itemVisuals($config, array_values(array_unique($entries)));
+    $decorate = static function (array $row) use ($items, $visuals): array {
         $entry = (int) $row['itemEntry'];
-        $item = $items[$entry] ?? [
-            'entry'          => $entry,
-            'name'           => "Unknown item #{$entry}",
-            'quality'        => 1,
-            'inventory_type' => 0,
-            'item_level'     => 0,
-            'required_level' => 0,
-            'source'         => 'unresolved',
-        ];
-
-        $item['slot']       = (int) $row['slot'];
-        $item['bag']        = (int) $row['bag'];
-        $item['item_guid']  = (int) $row['item_guid'];
-        $item['count']      = max(1, (int) $row['count']);
-        $item['durability'] = (int) $row['durability'];
-
-        // item_instance.owner_guid should agree with character_inventory.guid.
-        // It isn't used to find the item (character_inventory already scopes
-        // it to this character) but a mismatch means the database is out of
-        // sync, so it gets counted for the diagnostics page.
-        if ((int) $row['owner_guid'] !== $guid) {
-            $inventory['integrity']['owner_mismatch']++;
+        $item = $items[$entry] ?? unknownArmoryItem($entry);
+        $visual = $visuals[$entry] ?? [];
+        $item['display_id'] = (int) ($visual['display_id'] ?? 0);
+        $item['icon_file_data_id'] = (int) ($visual['icon_file_data_id'] ?? 0);
+        if (empty($item['inventory_type'])) {
+            $item['inventory_type'] = (int) ($visual['inventory_type'] ?? 0);
         }
-
+        $item['slot'] = (int) $row['slot'];
+        $item['bag'] = (int) $row['bag'];
+        $item['item_guid'] = (int) $row['item_guid'];
+        $item['count'] = max(1, (int) $row['count']);
+        $item['durability'] = $row['durability'] !== null ? (int) $row['durability'] : null;
+        $item['equipment_source'] = 'inventory';
         return $item;
     };
 
-    // Pass 1: everything sitting directly on the character (bag = 0).
     $containers = [];
     foreach ($rows as $row) {
         if ((int) $row['bag'] !== 0) {
             continue;
         }
-        if ($row['itemEntry'] === null) {
-            // character_inventory points at an item_instance row that is gone
-            $inventory['integrity']['missing_instance']++;
-            continue;
-        }
-
         $slot = (int) $row['slot'];
+        // Keep occupied slots even when their instance record is missing.
+        // A neutral unknown item is more honest than labelling the slot empty.
         $item = $decorate($row);
-
         if ($slot >= INV_EQUIPMENT_FIRST && $slot <= INV_EQUIPMENT_LAST) {
             $inventory['equipped'][$slot] = $item;
         } elseif ($slot >= INV_PROFESSION_FIRST && $slot <= INV_PROFESSION_LAST) {
@@ -861,37 +870,44 @@ function getCharacterInventory(array $config, int $guid): array
         } elseif ($slot >= INV_BACKPACK_FIRST && $slot <= INV_BACKPACK_LAST) {
             $inventory['backpack'][$slot] = $item;
         }
-        // bank / buyback / reagent bank slots are deliberately not shown
+        // Never infer equipment from owner_guid alone: bank/mail items also
+        // have owners, but that says nothing about where they are equipped.
     }
-
-    // Pass 2: items inside the equipped bags.
     foreach ($rows as $row) {
         $bag = (int) $row['bag'];
         if ($bag === 0) {
             continue;
         }
-        if ($row['itemEntry'] === null) {
-            $inventory['integrity']['missing_instance']++;
-            continue;
-        }
         if (!isset($containers[$bag])) {
-            // inside a bank bag (or a container we didn't list) — skip it
             $inventory['integrity']['orphan_bag']++;
-            continue;
+            continue; // bank bags and other non-carried containers stay private
         }
         $containers[$bag]['contents'][(int) $row['slot']] = $decorate($row);
     }
-
     foreach ($containers as $container) {
         ksort($container['contents']);
         $inventory['bags'][] = $container;
     }
     usort($inventory['bags'], static fn ($a, $b) => $a['slot'] <=> $b['slot']);
 
+    // Only use cached appearances for a wholly unavailable equipped loadout,
+    // or an occupied slot with a broken instance link. Do not resurrect stale
+    // cache entries in empty slots of an otherwise readable inventory.
+    $noEquipmentRows = !$inventory['equipped'];
+    foreach ($cache['slots'] as $slot => $appearance) {
+        $current = $inventory['equipped'][$slot] ?? null;
+        if ($noEquipmentRows || ($current !== null && (int) $current['entry'] <= 0)) {
+            $fallback = cachedAppearanceItem($config, $slot, $appearance);
+            if ($current !== null) {
+                $fallback['item_guid'] = $current['item_guid'];
+            }
+            $inventory['equipped'][$slot] = $fallback;
+            $inventory['integrity']['cache_fallback']++;
+        }
+    }
     ksort($inventory['equipped']);
     ksort($inventory['profession']);
     ksort($inventory['backpack']);
-
     return $inventory;
 }
 
@@ -1267,17 +1283,28 @@ function armoryDiagnostics(array $config): array
 
     // 8. end-to-end: a character with gear
     try {
-        $sample = $pdo->query('
-            SELECT c.guid, c.name, COUNT(ci.item) AS items
-            FROM characters c
-            JOIN character_inventory ci ON ci.guid = c.guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
-            GROUP BY c.guid, c.name
-            ORDER BY items DESC
-            LIMIT 1
-        ')->fetch(PDO::FETCH_ASSOC);
+        $visible = armoryAliveFilter($config);
+        $gmIds = !empty($config['hide_game_masters']) ? gmAccountIds($config) : [];
+        if ($gmIds) {
+            $visible .= ' AND c.account NOT IN (' . implode(',', array_map('intval', array_keys($gmIds))) . ')';
+        }
+        try {
+            $sample = $pdo->query("
+                SELECT c.guid, c.name, COUNT(ci.item) AS items
+                FROM characters c
+                LEFT JOIN character_inventory ci ON ci.guid = c.guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
+                WHERE 1 = 1 {$visible}
+                GROUP BY c.guid, c.name
+                ORDER BY items DESC, c.guid ASC
+                LIMIT 1
+            ")->fetch(PDO::FETCH_ASSOC);
+        } catch (\Throwable $e) {
+            $sample = $pdo->query("SELECT c.guid, c.name FROM characters c WHERE 1 = 1 {$visible} ORDER BY c.guid ASC LIMIT 1")
+                ->fetch(PDO::FETCH_ASSOC);
+        }
 
         if (!$sample) {
-            $add($checks, 'equipment lookup', 'warn', 'no character on this realm has anything equipped yet');
+            $add($checks, 'equipment lookup', 'warn', 'no public character is available to inspect');
         } else {
             $inventory = getCharacterInventory($config, (int) $sample['guid']);
             $equipment = $inventory['equipped'];
@@ -1287,7 +1314,7 @@ function armoryDiagnostics(array $config): array
             foreach ($inventory['bags'] as $bag) {
                 $carried += count($bag['contents']);
             }
-            $add($checks, 'characters -> character_inventory', 'ok', sprintf(
+            $add($checks, 'characters -> character_inventory', $inventory['status']['inventory'] === 'unavailable' ? 'fail' : ($inventory['status']['inventory'] === 'partial' ? 'warn' : 'ok'), sprintf(
                 '%s: %d inventory rows — %d equipped, %d profession, %d bag(s), %d carried item(s)',
                 $sample['name'],
                 $integrity['rows'],
@@ -1299,7 +1326,7 @@ function armoryDiagnostics(array $config): array
 
             if ($integrity['missing_instance'] > 0 || $integrity['owner_mismatch'] > 0) {
                 $add($checks, 'inventory integrity', 'warn', sprintf(
-                    '%d row(s) point at an item_instance that no longer exists, %d item(s) whose owner_guid disagrees with character_inventory.guid',
+                    '%d item instance(s) missing or unreadable, %d item(s) whose owner_guid disagrees with character_inventory.guid',
                     $integrity['missing_instance'],
                     $integrity['owner_mismatch']
                 ), 'Left over from a crash or a manual DB edit. The Armory shows the rows character_inventory lists for this character, which is the authoritative link.');
@@ -1307,7 +1334,13 @@ function armoryDiagnostics(array $config): array
                 $add($checks, 'inventory integrity', 'ok', 'every inventory row resolves to an item_instance owned by that character');
             }
 
-            $named = array_filter($equipment, static fn ($i) => $i['source'] !== 'unresolved');
+            $cacheState = $inventory['status']['cache'];
+            $add($checks, 'characters.equipmentCache', in_array($cacheState, ['available', 'empty'], true) ? 'ok' : 'warn',
+                $cacheState . ': ' . $integrity['cache_slots'] . ' saved equipped appearances; '
+                . $integrity['cache_fallback'] . ' used as fallback',
+                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance. These are NOT item IDs. Log out in-game to trigger a character save.');
+
+            $named = array_filter($equipment, static fn ($i) => (int) $i['entry'] > 0 && $i['source'] !== 'unresolved');
             $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));
             $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped items resolved';
             if ($sources) {
@@ -1354,6 +1387,7 @@ function armoryTraceName(array $config, string $name): array
         'error'     => null,
         'matches'   => [],
         'equipment' => [],
+        'inventory' => null,
     ];
 
     $pdo = connectCharactersDb($config);
@@ -1405,13 +1439,17 @@ function armoryTraceName(array $config, string $name): array
             'why'     => $why,
         ];
 
-        if (!$hidden && !$trace['equipment']) {
-            foreach (getCharacterEquipment($config, (int) $row['guid']) as $slot => $item) {
+        if (!$hidden && $trace['inventory'] === null) {
+            $inventory = getCharacterInventory($config, (int) $row['guid']);
+            $trace['inventory'] = ['status' => $inventory['status'], 'integrity' => $inventory['integrity']];
+            foreach ($inventory['equipped'] as $slot => $item) {
                 $trace['equipment'][] = [
                     'slot'   => equipSlotLabel((int) $slot),
                     'entry'  => (int) $item['entry'],
+                    'display_id' => (int) ($item['display_id'] ?? 0),
                     'name'   => (string) $item['name'],
                     'source' => (string) $item['source'],
+                    'equipment_source' => (string) $item['equipment_source'],
                 ];
             }
         }

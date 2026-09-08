@@ -6,8 +6,8 @@ $name = trim($_GET['name'] ?? '');
 
 $character = ($guid > 0 || $name !== '') ? findCharacter($config, $guid ?: null, $name) : null;
 
-// One read of character_inventory for this character (equipped gear, the
-// profession slots, the equipped bags and their contents, and the backpack).
+// Read saved inventory plus the optional character-select appearance cache.
+// Only a visible profile reaches this lookup; hidden GM characters stay hidden.
 $inventory = $character ? getCharacterInventory($config, (int) $character['guid']) : null;
 $equipment = $inventory['equipped'] ?? [];
 $professionItems = $inventory['profession'] ?? [];
@@ -25,6 +25,8 @@ $searchTerm = $name !== '' ? $name : '';
 
 $activePage = 'armory';
 $pageTitle = $character ? $character['name'] : 'Character not found';
+$bodyClass = 'character-page';
+$pageStylesheets = ['assets/character.css'];
 require __DIR__ . '/includes/header.php';
 ?>
 
@@ -43,8 +45,8 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="panel">
     <p class="roster-empty" style="margin-bottom: 14px;">
-      Names are matched without caring about capitalisation, so this really is
-      a character that doesn't exist (or one that has been deleted).
+      Names are matched without caring about capitalisation. The character may
+      be unavailable, deleted, or hidden from the Armory.
     </p>
     <?php if (!empty($config['debug'])): ?>
       <?php $reason = armoryLookupReason(); ?>
@@ -81,24 +83,68 @@ require __DIR__ . '/includes/header.php';
     $zonesLookup = file_exists(__DIR__ . '/data/zones.php') ? require __DIR__ . '/data/zones.php' : [];
     $zoneId = (int) $character['zone'];
     $goldTotal = (int) ($character['money'] ?? 0);
+    $cacheCount = (int) $inventory['integrity']['cache_fallback'];
+    $unresolved = array_filter($equipment, static fn ($i) => $i['source'] === 'unresolved');
+    $enable3d = !empty($config['enable_3d_viewer']) && in_array($raceId, [1, 2, 3, 4, 5, 6, 7, 8, 10, 11], true);
   ?>
-  <div class="panel">
-    <div class="char-header">
-      <img class="icon" src="images/class/<?= $classId ?>.gif" alt="" onerror="this.classList.add('icon-missing')">
-      <img class="icon" src="images/race/<?= $raceId ?>-<?= $gender ?>.gif" alt="" onerror="this.classList.add('icon-missing')">
-      <div>
-        <h1><?= htmlspecialchars($character['name']) ?></h1>
-        <div class="char-sub">
-          Level <?= (int) $character['level'] ?> <?= htmlspecialchars(raceName($raceId)) ?> <?= htmlspecialchars(className($classId)) ?>
-          · <?= raceFaction($raceId) ?>
-          <?php if ($guild): ?>
-            · <a href="guild.php?id=<?= (int) $guild['guildid'] ?>">&lt;<?= htmlspecialchars($guild['name']) ?>&gt;</a>
-            <?php if (!empty($guild['rank_name'])): ?> (<?= htmlspecialchars($guild['rank_name']) ?>)<?php endif; ?>
-          <?php endif; ?>
+  <header class="character-overview">
+    <div class="character-identity">
+      <h1><?= htmlspecialchars($character['name']) ?></h1>
+      <p>Level <?= (int) $character['level'] ?> <?= htmlspecialchars(raceName($raceId)) ?> <?= htmlspecialchars(className($classId)) ?></p>
+      <?php if ($guild): ?>
+        <p class="character-guild"><a href="guild.php?id=<?= (int) $guild['guildid'] ?>">&lt;<?= htmlspecialchars($guild['name']) ?>&gt;</a></p>
+      <?php endif; ?>
+      <p class="character-realm"><?= htmlspecialchars($config['server_name']) ?></p>
+      <p class="character-online"><?= (int) $character['online'] === 1 ? 'Online' : 'Offline' ?> <span class="status-dot <?= (int) $character['online'] === 1 ? 'online' : '' ?>" aria-hidden="true"></span></p>
+    </div>
+    <a class="character-back" href="armory.php">← Armory search</a>
+  </header>
+
+  <section class="paperdoll" aria-label="Equipped items" id="character-equipment">
+    <div class="paperdoll-stage">
+      <?php foreach (paperdollSlots() as $position => $slots): ?>
+        <div class="<?= $position === 'weapons' ? 'gear-weapons' : 'gear-column gear-' . $position ?>">
+          <?php foreach ($slots as $slot): ?>
+            <?php $item = $equipment[$slot] ?? null; require __DIR__ . '/includes/equipment-slot.php'; ?>
+          <?php endforeach; ?>
         </div>
+      <?php endforeach; ?>
+      <div class="model-stage">
+        <div class="model-canvas" id="character-model" aria-label="3D equipment preview" hidden></div>
+        <p class="model-status" id="model-status" role="status" aria-live="polite"></p>
       </div>
     </div>
+    <div class="paperdoll-controls">
+      <?php if ($enable3d): ?>
+        <label class="model-toggle"><input type="checkbox" id="enable-character-model" aria-controls="character-model" disabled> Enable 3D viewer</label>
+        <noscript><span class="equipment-count">JavaScript is required for the optional 3D preview.</span></noscript>
+      <?php else: ?>
+        <span class="equipment-count">Equipment overview</span>
+      <?php endif; ?>
+      <span class="equipment-count"><?= count($equipment) ?> / 19 saved slots<?php if ($cacheCount): ?> · <?= $cacheCount ?> cached appearance<?= $cacheCount === 1 ? '' : 's' ?><?php endif; ?></span>
+    </div>
+    <p class="equipment-hint">Hover, tap or focus a slot to inspect it. This is saved realm data; after changing gear in-game, log out and refresh.</p>
+    <p class="equipment-hint" id="model-disclaimer" hidden>3D preview uses a base model for this race and body type, plus the available equipment appearances. Face, hair and other customizations are not applied. Model assets are provided by Wowhead.</p>
 
+    <?php if ($cacheCount): ?>
+      <div class="equipment-notice" role="status">
+        <strong>Showing saved appearances for <?= $cacheCount ?> slot<?= $cacheCount === 1 ? '' : 's' ?>.</strong>
+        <p>Inventory details are unavailable for these slots. A dashed border and “C” mark a cached appearance, not an identified item. The cache can be older than your in-game gear.</p>
+        <p>Log out to let the worldserver save, then refresh. <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">Check this character's equipment data</a>.</p>
+      </div>
+    <?php elseif ($inventory['status']['inventory'] === 'unavailable'): ?>
+      <div class="equipment-notice" role="status">Equipment data could not be read. This does not mean the character is unequipped. <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">Check the equipment data</a>.</div>
+    <?php elseif (!$equipment): ?>
+      <div class="equipment-notice" role="status">No saved equipment was found. If this character has gear in-game, log out and refresh, or <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">check its saved data</a>.</div>
+    <?php endif; ?>
+    <?php if ($unresolved): ?>
+      <p class="equipment-hint"><?= count($unresolved) ?> occupied slot<?= count($unresolved) === 1 ? ' has' : 's have' ?> unavailable item details. The slots are still shown; <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">diagnostics</a> explains which records or item definitions are missing.</p>
+    <?php endif; ?>
+    <?php require __DIR__ . '/includes/db-errors.php'; ?>
+  </section>
+
+  <details class="panel character-details">
+    <summary>Character details<?php if ($averageIlvl !== null): ?> · Average item level <?= $averageIlvl ?><?php endif; ?></summary>
     <dl class="stats">
       <div>
         <dt>Status</dt>
@@ -132,49 +178,11 @@ require __DIR__ . '/includes/header.php';
         <dd><?= number_format(intdiv($goldTotal, 10000)) ?>g</dd>
       </div>
     </dl>
-  </div>
+  </details>
 
-  <div class="panel" style="margin-top: 22px;">
-    <h2>Equipment</h2>
-    <?php if (empty($equipment)): ?>
-      <p class="roster-empty">
-        Nothing equipped — this character has no items in equipment slots
-        (<code>character_inventory</code> rows with <code>bag = 0</code> and <code>slot</code> 0-18).
-      </p>
-    <?php else: ?>
-      <div class="equip-grid">
-        <?php for ($slot = 0; $slot <= 18; $slot++): ?>
-          <?php $item = $equipment[$slot] ?? null; ?>
-          <div class="equip-row">
-            <span class="slot-label"><?= htmlspecialchars(equipSlotLabel($slot)) ?></span>
-            <?php if ($item): ?>
-              <?php $q = itemQualityInfo((int) $item['quality']); ?>
-              <span class="item-name" style="color: <?= $q[1] ?>;">
-                <?= htmlspecialchars($item['name']) ?>
-                <?php if ((int) $item['item_level'] > 0): ?>
-                  <span class="item-ilvl"><?= (int) $item['item_level'] ?></span>
-                <?php endif; ?>
-              </span>
-            <?php else: ?>
-              <span class="item-name empty">Empty</span>
-            <?php endif; ?>
-          </div>
-        <?php endfor; ?>
-      </div>
-      <?php
-        $unresolved = array_filter($equipment, static fn ($i) => $i['source'] === 'unresolved');
-      ?>
-      <?php if ($unresolved): ?>
-        <p class="roster-empty" style="margin-top: 14px;">
-          <?= count($unresolved) ?> item(s) couldn't be named — they exist on the character
-          but not in <code>hotfixes.item_sparse</code> or the bundled DB2 export.
-          <a href="armory-diagnostics.php">Diagnostics</a>
-        </p>
-      <?php endif; ?>
-    <?php endif; ?>
-
-    <?php if ($professionItems): ?>
-      <h2 style="margin-top: 26px;">Profession gear</h2>
+  <?php if ($professionItems): ?>
+    <details class="panel character-details">
+      <summary>Profession gear</summary>
       <div class="equip-grid">
         <?php foreach ($professionItems as $slot => $item): ?>
           <?php $q = itemQualityInfo((int) $item['quality']); ?>
@@ -184,16 +192,15 @@ require __DIR__ . '/includes/header.php';
           </div>
         <?php endforeach; ?>
       </div>
-    <?php endif; ?>
-    <?php require __DIR__ . '/includes/db-errors.php'; ?>
-  </div>
+    </details>
+  <?php endif; ?>
 
   <?php if ($showBags): ?>
-    <div class="panel" style="margin-top: 22px;">
-      <h2>Bags <span class="bag-total"><?= $carriedCount ?> item<?= $carriedCount === 1 ? '' : 's' ?> carried</span></h2>
+    <details class="panel character-details">
+      <summary>Bags <span class="bag-total"><?= $carriedCount ?> item<?= $carriedCount === 1 ? '' : 's' ?> carried</span></summary>
 
       <?php if (!$bags && !$backpack): ?>
-        <p class="roster-empty">This character isn't carrying anything.</p>
+        <p class="roster-empty">No carried items were found in the saved inventory.</p>
       <?php else: ?>
         <div class="bag-group">
           <div class="bag-head">
@@ -238,8 +245,12 @@ require __DIR__ . '/includes/header.php';
           </div>
         <?php endforeach; ?>
       <?php endif; ?>
-    </div>
+    </details>
   <?php endif; ?>
+  <?php if ($enable3d): ?>
+    <script type="application/json" id="character-model-data"><?= json_encode(['race' => $raceId, 'gender' => $gender, 'items' => equipmentModelItems($equipment)], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
+  <?php endif; ?>
+  <script src="assets/character.js" defer></script>
 <?php endif; ?>
 
 <?php require __DIR__ . '/includes/footer.php'; ?>

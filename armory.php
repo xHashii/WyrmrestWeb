@@ -9,12 +9,21 @@ $tooShort = $query !== '' && $queryLength < ARMORY_MIN_SEARCH_LENGTH;
 
 $characterResults = [];
 $guildResults = [];
+$characterPageSize = 30;
+$characterPage = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, [
+    'options' => ['min_range' => 1, 'max_range' => intdiv(PHP_INT_MAX, $characterPageSize)],
+]) ?: 1;
+$hasMoreCharacters = false;
 
 if ($query !== '' && !$tooShort) {
     if ($type === 'guild') {
         $guildResults = searchGuilds($config, $query);
     } else {
-        $characterResults = searchCharacters($config, $query);
+        // Fetch one extra visible character to know whether another page exists.
+        $characterResults = searchCharacters($config, $query, $characterPageSize + 1,
+            ($characterPage - 1) * $characterPageSize);
+        $hasMoreCharacters = count($characterResults) > $characterPageSize;
+        $characterResults = array_slice($characterResults, 0, $characterPageSize);
     }
 }
 
@@ -25,7 +34,7 @@ require __DIR__ . '/includes/header.php';
 
 <div class="page-header">
   <h1>Armory</h1>
-  <p>Look up characters and guilds — type the first <?= ARMORY_MIN_SEARCH_LENGTH ?> letters of a name.</p>
+  <p>Look up characters of every level, including level 1, and guilds — type at least <?= ARMORY_MIN_SEARCH_LENGTH ?> letters from the start of a name.</p>
 </div>
 
 <div class="panel">
@@ -60,9 +69,14 @@ require __DIR__ . '/includes/header.php';
     </p>
   <?php elseif ($type === 'character'): ?>
     <?php if (empty($characterResults)): ?>
-      <p class="roster-empty" style="margin-top: 18px;">No characters start with "<?= htmlspecialchars($query) ?>".</p>
+      <p class="roster-empty" style="margin-top: 18px;">
+        <?= $characterPage > 1 ? 'No more characters' : 'No characters' ?> start with "<?= htmlspecialchars($query) ?>".
+      </p>
     <?php else: ?>
-      <p class="search-summary"><?= count($characterResults) ?> character<?= count($characterResults) === 1 ? '' : 's' ?> starting with "<?= htmlspecialchars($query) ?>"</p>
+      <p class="search-summary">
+        Showing <?= count($characterResults) ?> character<?= count($characterResults) === 1 ? '' : 's' ?> starting with "<?= htmlspecialchars($query) ?>"
+        <?php if ($characterPage > 1 || $hasMoreCharacters): ?> · Page <?= $characterPage ?><?php endif; ?>
+      </p>
       <div>
         <?php foreach ($characterResults as $c): ?>
           <?php
@@ -79,6 +93,17 @@ require __DIR__ . '/includes/header.php';
           </a>
         <?php endforeach; ?>
       </div>
+    <?php endif; ?>
+    <?php if ($characterPage > 1 || $hasMoreCharacters): ?>
+      <nav class="pager" aria-label="Character search pages">
+        <?php if ($characterPage > 1): ?>
+          <a class="pager-link" rel="prev" href="?<?= htmlspecialchars(http_build_query(['type' => 'character', 'q' => $query, 'page' => $characterPage - 1])) ?>">‹ Previous</a>
+        <?php endif; ?>
+        <span class="pager-link active" aria-current="page">Page <?= $characterPage ?></span>
+        <?php if ($hasMoreCharacters): ?>
+          <a class="pager-link" rel="next" href="?<?= htmlspecialchars(http_build_query(['type' => 'character', 'q' => $query, 'page' => $characterPage + 1])) ?>">Next ›</a>
+        <?php endif; ?>
+      </nav>
     <?php endif; ?>
   <?php else: ?>
     <?php if (empty($guildResults)): ?>
@@ -102,8 +127,8 @@ require __DIR__ . '/includes/header.php';
 <script>
 /**
  * Type-ahead for the search box: after <?= ARMORY_MIN_SEARCH_LENGTH ?> characters, ask
- * armory-suggest.php for every name starting with what's been typed.
- * Purely additive — submitting the form still does a full server-side search.
+ * armory-suggest.php for up to ten names starting with what's been typed.
+ * Purely additive — submitting the form searches every match, with pagination.
  */
 (function () {
   var input = document.getElementById('armory-search-input');
