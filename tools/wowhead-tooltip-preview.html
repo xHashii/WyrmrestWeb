@@ -11,7 +11,7 @@
   /* Force the tooltips open + in-flow for the preview only. */
   .gear-tooltip { position:static; display:block !important; width:300px; }
   .gear-slot { width:auto; height:auto; }
-  .note { max-width:460px; font-size:13px; line-height:1.6; color:#b7bac3; }
+  .note { max-width:560px; font-size:13px; line-height:1.6; color:#b7bac3; }
   .note code { background:#2c2e33; padding:1px 5px; border-radius:3px; }
 </style>
 </head>
@@ -19,13 +19,16 @@
 <h2>Wowhead item stat tooltip — front-end preview</h2>
 <p class="note">
   This shows exactly how the gear tooltip renders once <code>includes/wowhead.php</code> has
-  fetched and cached a tooltip from Wowhead. The stat blocks below are verbatim
+  fetched and cached a tooltip from Wowhead. The first two stat blocks are verbatim
   <code>nether.wowhead.com/wotlk/tooltip/item/&lt;id&gt;</code> tooltip markup — the JSON tooltip
   API the Wowhead sites themselves use, which returns only the tooltip (never the item page) —
-  sanitised the same way the server does: quality <code>q0&ndash;q7</code> classes kept, internal
-  <code>&lt;!--stat7--&gt;</code>-style markers and every inline attribute dropped, relative
-  Wowhead links made absolute. In the live app each block is injected by
-  <code>getWowheadItemTooltips()</code> into <code>includes/equipment-slot.php</code>.
+  sanitised the same way the server does: quality <code>q0&ndash;q7</code> classes kept, the
+  <code>money*</code>/<code>socket-*</code> tokens behind Wowhead's coin and gem icons kept,
+  internal <code>&lt;!--stat7--&gt;</code>-style markers and every inline attribute dropped,
+  relative Wowhead links made absolute, and the title row's <em>Phase&nbsp;N</em> marker removed.
+  The third block is hand-built to exercise every socket colour (meta, prismatic, cogwheel).
+  In the live app each block is injected by <code>getWowheadItemTooltips()</code> into
+  <code>includes/equipment-slot.php</code>.
 </p>
 
 <div class="demo-wrap">
@@ -33,20 +36,29 @@
   <div class="gear-slot is-occupied" style="--item-quality:#a335ee;">
     <div class="gear-tooltip" role="group">
       <span class="gear-slot-label">Chest</span>
-      <div class="wowhead-stats"><table><tr><td><table><tr><td><b class="q4">Rot-Resistant Breastplate</b></td><th><b class="q0">Phase 4</b></th></tr></table><br><span class="q2">Heroic</span><span class="q"><br>Item Level 277</span><br>Binds when picked up<table><tr><td>Chest</td><th><span class="q1">Plate</span></th></tr></table><span>2756 Armor</span><br><span>+139 Stamina</span><br><span>+139 Intellect</span><br><br><a class="q0" href="https://www.wowhead.com/wotlk/items/gems?filter=81;4;0" target="_blank" rel="noopener noreferrer">Blue Socket</a><br><a class="q0" href="https://www.wowhead.com/wotlk/items/gems?filter=81;3;0" target="_blank" rel="noopener noreferrer">Yellow Socket</a><br><a class="q0" href="https://www.wowhead.com/wotlk/items/gems?filter=81;2;0" target="_blank" rel="noopener noreferrer">Red Socket</a><br><span class="q0">Socket Bonus: +9 Spell Power</span><br><br>Durability 165 / 165</td></tr></table><table><tr><td>Requires Level 80<br><span class="q2">Equip: Improves critical strike rating by 106.</span><br><span class="q2">Equip: Improves haste rating by 114.</span><br><span class="q2">Equip: Increases spell power by 185.</span><div>Sell Price: <span>18</span> <span>89</span> <span>5</span></div><div>Dropped by: Rotface</div><div>Drop Chance: 2.95%</div></td></tr></table></div>
+      <div class="wowhead-stats"><table><tr><td><table><tr><td><b class="q4">Rot-Resistant Breastplate</b></td></tr></table><br><span class="q2">Heroic</span><span class="q"><br>Item Level 277</span><br>Binds when picked up<table><tr><td>Chest</td><th><span class="q1">Plate</span></th></tr></table><span>2756 Armor</span><br><span>+139 Stamina</span><br><span>+139 Intellect</span><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;4;0" target="_blank" rel="noopener noreferrer" class="socket-blue q0">Blue Socket</a><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;3;0" target="_blank" rel="noopener noreferrer" class="socket-yellow q0">Yellow Socket</a><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;2;0" target="_blank" rel="noopener noreferrer" class="socket-red q0">Red Socket</a><br><span class="q0">Socket Bonus: +9 Spell Power</span><br>Durability 165 / 165</td></tr></table><table><tr><td>Requires Level 80<br><span class="q2">Equip: Improves critical strike rating by 106.</span><br><span class="q2">Equip: Improves haste rating by 114.</span><br><span class="q2">Equip: Increases spell power by 185.</span><div class="whtt-sellprice">Sell Price: <span class="moneygold">18</span> <span class="moneysilver">89</span> <span class="moneycopper">5</span></div><div class="whtt-extra whtt-droppedby">Dropped by: Rotface</div><div class="whtt-extra whtt-dropchance">Drop Chance: 2.95%</div></td></tr></table></div>
       <a class="gear-external-link" href="https://www.wowhead.com/wotlk/item=50680" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
     </div>
   </div>
 
-  <!-- Epic (q4) example: a WotLK gun -->
+  <!-- Epic (q4) example: a WotLK gun (no sockets — the icons simply don't apply) -->
   <div class="gear-slot is-occupied" style="--item-quality:#a335ee;">
     <div class="gear-tooltip" role="group">
       <span class="gear-slot-label">Ranged</span>
-      <div class="wowhead-stats"><table><tr><td><table><tr><td><b class="q4">Envoy of Mortality</b></td><th><b class="q0">Phase 1</b></th></tr></table><span class="q"><br>Item Level 226</span><br>Binds when picked up<table><tr><td>Ranged</td><th><span class="q1">Gun</span></th></tr></table><table><tr>
+      <div class="wowhead-stats"><table><tr><td><table><tr><td><b class="q4">Envoy of Mortality</b></td></tr></table><span class="q"><br>Item Level 226</span><br>Binds when picked up<table><tr><td>Ranged</td><th><span class="q1">Gun</span></th></tr></table><table><tr>
     <td><span>376 - 646 Damage</span></td>
     <th>Speed 2.90</th>
-</tr></table>(176.21 damage per second)<br><span>+36 Agility</span><br><span>+30 Stamina</span><br>Durability 90 / 90</td></tr></table><table><tr><td>Requires Level 80<br><span class="q2">Equip: Improves critical strike rating by 26.</span><br><span class="q2">Equip: <a class="q2" href="https://www.wowhead.com/wotlk/spell=15821/attack-power-72" target="_blank" rel="noopener noreferrer">Increases attack power by 72.</a></span><div>Sell Price: <span>15</span> <span>83</span> <span>85</span></div><div>Dropped by: Kel'Thuzad</div><div>Drop Chance: 11.44%</div></td></tr></table></div>
+</tr></table>(176.21 damage per second)<br><span>+36 Agility</span><br><span>+30 Stamina</span><br>Durability 90 / 90</td></tr></table><table><tr><td>Requires Level 80<br><span class="q2">Equip: Improves critical strike rating by 26.</span><br><span class="q2">Equip: <a class="q2" href="https://www.wowhead.com/wotlk/spell=15821/attack-power-72" target="_blank" rel="noopener noreferrer">Increases attack power by 72.</a></span><div class="whtt-sellprice">Sell Price: <span class="moneygold">15</span> <span class="moneysilver">83</span> <span class="moneycopper">85</span></div><div class="whtt-extra whtt-droppedby">Dropped by: Kel'Thuzad</div><div class="whtt-extra whtt-dropchance">Drop Chance: 11.44%</div></td></tr></table></div>
       <a class="gear-external-link" href="https://www.wowhead.com/wotlk/item=40385" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
+    </div>
+  </div>
+
+  <!-- Synthetic block: every socket colour the CSS knows, incl. meta/prismatic/cogwheel -->
+  <div class="gear-slot is-occupied" style="--item-quality:#a335ee;">
+    <div class="gear-tooltip" role="group">
+      <span class="gear-slot-label">Head</span>
+      <div class="wowhead-stats"><table><tr><td><table><tr><td><b class="q4">Gearheart Goggles</b></td></tr></table><br><span class="q2">Heroic</span><span class="q"><br>Item Level 200</span><br>Binds when picked up<table><tr><td>Head</td><th><span class="q1">Mail</span></th></tr></table><span>1101 Armor</span><br><span>+48 Agility</span><br><span>+42 Stamina</span><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;1;0" target="_blank" rel="noopener noreferrer" class="socket-meta q0">Meta Socket</a><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;0;0" target="_blank" rel="noopener noreferrer" class="socket-prismatic q0">Prismatic Socket</a><br><a href="https://www.wowhead.com/wotlk/items/gems?filter=81;16;0" target="_blank" rel="noopener noreferrer" class="socket-cogwheel q0">Cogwheel Socket</a><br><span class="q0">Socket Bonus: +8 Agility</span><br>Durability 85 / 85</td></tr></table><table><tr><td>Requires Level 80<br><div class="whtt-sellprice">Sell Price: <span class="moneygold">9</span> <span class="moneysilver">27</span> <span class="moneycopper">60</span></div></td></tr></table></div>
+      <a class="gear-external-link" href="https://www.wowhead.com/wotlk/items/gems" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
     </div>
   </div>
 </div>
