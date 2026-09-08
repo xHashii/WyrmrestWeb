@@ -36,7 +36,7 @@
 .item-art[hidden] { display: none; }
 .is-occupied .slot-placeholder { color: #868b96; }
 .unknown-item-mark { position: absolute; display: grid; place-items: center; right: 1px; bottom: 1px; min-width: 14px; height: 14px; font: 700 12px/1 sans-serif; border-radius: 2px; background: #171719e8; color: #ddd; }
-.gear-tooltip { display: none; position: absolute; left: calc(100% + 12px); top: 0; z-index: 50; width: 260px; max-width: calc(100vw - 24px); padding: 14px 16px; border: 1px solid var(--item-quality); border-radius: 5px; background: #111216f5; box-shadow: 0 10px 30px #0009; color: #e9e9ed; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.gear-tooltip { display: none; position: absolute; left: calc(100% + 12px); top: 0; z-index: 50; width: 300px; max-width: calc(100vw - 24px); max-height: min(80vh, 620px); overflow-y: auto; padding: 14px 16px; border: 1px solid var(--item-quality); border-radius: 5px; background: #111216f5; box-shadow: 0 10px 30px #0009; color: #e9e9ed; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .gear-slot[open] { z-index: 20; }
 .gear-slot[open] .gear-tooltip { display: block; }
 .gear-right .gear-tooltip { left: auto; right: calc(100% + 12px); }
@@ -48,6 +48,29 @@
 .is-empty .gear-item-name { color: #dedee5; }
 .gear-meta { display: block; color: #b5b7c2; margin: 3px 0; }
 .gear-external-link { display: inline-block; margin-top: 9px; color: #a9c9fc; font-size: 11px; text-underline-offset: 3px; }
+
+/* Wowhead item stat block, rendered inside the gear tooltip. It mirrors
+   Wowhead's own tooltip — same stat lines, equip effects and quality colours
+   (the q0–q7 classes map 1:1 to the slot-border colours used above). */
+.wowhead-stats { margin-top: 3px; color: #f1efe8; font-size: 12px; line-height: 1.55; }
+.wowhead-stats table { width: 100%; border: 0; border-collapse: collapse; border-spacing: 0; }
+.wowhead-stats tbody, .wowhead-stats tr, .wowhead-stats td { display: block; padding: 0; border: 0; text-align: left; }
+.wowhead-stats td { margin: 0; }
+.wowhead-stats td + td { margin-top: 0; }
+.wowhead-stats br { line-height: 1.55; }
+.wowhead-stats b, .wowhead-stats strong { font-weight: 600; }
+.wowhead-stats a { color: #a9c9fc; text-decoration: none; }
+.wowhead-stats a:hover { text-decoration: underline; }
+.wowhead-stats .indent { padding-left: 12px; }
+/* Standard WoW quality colours (same values as itemQualityInfo()). */
+.wowhead-stats .q0 { color: #9d9d9d; }
+.wowhead-stats .q1 { color: #ffffff; }
+.wowhead-stats .q2 { color: #1eff00; }
+.wowhead-stats .q3 { color: #0070dd; }
+.wowhead-stats .q4 { color: #a335ee; }
+.wowhead-stats .q5 { color: #ff8000; }
+.wowhead-stats .q6 { color: #e6cc80; }
+.wowhead-stats .q7 { color: #00ccff; }
 .model-stage { grid-area: model; position: relative; min-width: 0; min-height: calc(8 * var(--slot-size) + 7 * var(--slot-gap)); isolation: isolate; }
 .model-canvas { width: 100%; height: 100%; position: absolute; inset: 0; overflow: hidden; }
 .model-canvas[hidden] { display: none; }

@@ -215,7 +215,8 @@ leaderboard.
 of a name, with live suggestions and paginated results at every level), a
 character page (level, race, class, faction, guild, zone, played time,
 online status, average item level, and an icon-based equipment paper doll
-with quality borders, slot details and an optional 3D preview), guild search, a guild roster page, and
+with quality borders, slot details, full Wowhead item stat tooltips and an
+optional 3D preview), guild search, a guild roster page, and
 a diagnostics page that checks every database and file the Armory needs.
 
 **What's not included** (present in the original Node app, cut here to
@@ -235,6 +236,7 @@ armory-model-asset.php  Fixed-origin, cached assets for the optional 3D viewer
 assets/character.*     Responsive profile styles, slot details and viewer controls
 includes/equipment.php  Saved-appearance parser and equipment layout/model helpers
 includes/item-visuals.php  Icons/display IDs from the bundled DB2 exports
+includes/wowhead.php      Item stat tooltips fetched from Wowhead and cached (cache/wowhead/)
 data/item-icon-names.json  FileDataID -> icon filename map
 images/items/          Small bundled icon set + optional locally extracted icons
 guild.php               Guild roster

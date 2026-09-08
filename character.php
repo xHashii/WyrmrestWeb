@@ -15,6 +15,12 @@ $bags = $inventory['bags'] ?? [];
 $backpack = $inventory['backpack'] ?? [];
 $averageIlvl = $equipment ? averageItemLevel($equipment) : null;
 $showBags = !empty($config['show_bag_contents']);
+
+// Pull Wowhead's full stat tooltips for the equipped gear (cached, parallel).
+$wowheadStats = getWowheadItemTooltips($config, array_values(array_filter(array_map(
+    static fn (array $it): int => (int) ($it['entry'] ?? 0),
+    $equipment
+))));
 $carriedCount = count($backpack);
 foreach ($bags as $bag) {
     $carriedCount += count($bag['contents']);

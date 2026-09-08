@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wowhead stat tooltip — preview</title>
+<link rel="stylesheet" href="../assets/character.css">
+<style>
+  body { background:#202123; color:#eee; font-family:'Inter',system-ui,sans-serif; padding:40px; }
+  .demo-wrap { display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+  /* Force the tooltips open + in-flow for the preview only. */
+  .gear-tooltip { position:static; display:block !important; width:300px; }
+  .gear-slot { width:auto; height:auto; }
+  .note { max-width:460px; font-size:13px; line-height:1.6; color:#b7bac3; }
+  .note code { background:#2c2e33; padding:1px 5px; border-radius:3px; }
+</style>
+</head>
+<body>
+<h2>Wowhead item stat tooltip — front-end preview</h2>
+<p class="note">
+  This shows exactly how the gear tooltip renders once <code>includes/wowhead.php</code> has
+  fetched and cached a tooltip from Wowhead. The coloured stat block below is a representative
+  Wowhead <code>&amp;json</code> tooltip fragment, sanitised to just the
+  <code>q0–q7</code> quality classes you see on the site. In the live app the block is injected
+  by <code>getWowheadItemTooltips()</code> into <code>includes/equipment-slot.php</code>.
+</p>
+
+<div class="demo-wrap">
+  <!-- Epic (q4) example: a WotLK gun -->
+  <div class="gear-slot is-occupied" style="--item-quality:#a335ee;">
+    <div class="gear-tooltip" role="group">
+      <span class="gear-slot-label">Ranged</span>
+      <div class="wowhead-stats"><table class="wowhead-tooltip"><tbody>
+        <tr><td><b class="q4">Envoy of Mortality</b> <span class="q0">(Item Level 226)</span></td></tr>
+        <tr><td class="q0">Binds when picked up</td></tr>
+        <tr><td>Ranged <span class="q0">Gun</span></td></tr>
+        <tr><td>376 - 646 Damage <span class="q0">Speed 2.90</span></td></tr>
+        <tr><td class="q0">(176.21 damage per second)</td></tr>
+        <tr><td class="q2">+36 Agility</td></tr>
+        <tr><td class="q2">+30 Stamina</td></tr>
+        <tr><td class="q0">Durability 90 / 90</td></tr>
+        <tr><td class="q0">Requires Level 80</td></tr>
+        <tr><td class="q2">Equip: Improves critical strike rating by 26 (0.57% @ L80).</td></tr>
+        <tr><td><span class="q2">Equip: <a href="https://www.wowhead.com/wotlk/spell=15821/attack-power-72">Increases attack power by 72.</a></span></td></tr>
+        <tr><td class="q0">Sell Price: 15 83 5</td></tr>
+      </tbody></table></div>
+      <a class="gear-external-link" href="https://www.wowhead.com/wotlk/item=40385" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
+    </div>
+  </div>
+
+  <!-- Uncommon (q2) example: a gem/trinket-style item with an equip proc -->
+  <div class="gear-slot is-occupied" style="--item-quality:#1eff00;">
+    <div class="gear-tooltip" role="group">
+      <span class="gear-slot-label">Trinket 1</span>
+      <div class="wowhead-stats"><table class="wowhead-tooltip"><tbody>
+        <tr><td><b class="q2">Badge of the Swarmguard</b></td></tr>
+        <tr><td class="q0">Binds when picked up</td></tr>
+        <tr><td>Unique</td></tr>
+        <tr><td>Trinket</td></tr>
+        <tr><td class="q2">+21 Stamina</td></tr>
+        <tr><td class="q2">Use: Reflects 50 damage back at the attacker.</td></tr>
+        <tr><td class="q0">Requires Level 80</td></tr>
+        <tr><td class="q0">Item Level 213</td></tr>
+      </tbody></table></div>
+      <a class="gear-external-link" href="https://www.wowhead.com/wotlk/item=38287" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>

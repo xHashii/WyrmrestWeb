@@ -4,6 +4,7 @@ $config = require __DIR__ . '/../config.php';
 require_once __DIR__ . '/itemdb.php';
 require_once __DIR__ . '/item-visuals.php';
 require_once __DIR__ . '/equipment.php';
+require_once __DIR__ . '/wowhead.php';
 
 /**
  * Every database call in here is written to fail softly — a missing table or
