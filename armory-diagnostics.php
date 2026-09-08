@@ -117,7 +117,7 @@ require __DIR__ . '/includes/header.php';
           <div><dt>item_instance links</dt><dd><?= $saved['integrity']['missing_instance'] ?> missing/unreadable · <?= $saved['integrity']['owner_mismatch'] ?> owner mismatches</dd></div>
           <div><dt>equipmentCache</dt><dd><?= htmlspecialchars($saved['status']['cache']) ?> · <?= $saved['integrity']['cache_slots'] ?> saved appearances · <?= $saved['integrity']['cache_fallback'] ?> used as fallback</dd></div>
         </dl>
-        <p class="roster-empty" style="margin-top: 12px;">The cache contains appearance/display IDs, not item IDs. It can show how gear looked at the last character save, but cannot identify the exact item or its stats. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
+        <p class="roster-empty" style="margin-top: 12px;">The cache stores appearance/display IDs plus each item's subclass and inventory type — not item IDs. Those are resolved back to the item through the bundled DB2 appearance graph, so gear can still be named and priced when the inventory tables are unreadable. When several items share one look, the canonical match is shown. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
       <?php endif; ?>
       <h2 style="margin-top: 24px;">Equipped items and appearances</h2>
       <?php if (!$trace['equipment']): ?>
@@ -169,7 +169,7 @@ require __DIR__ . '/includes/header.php';
     </div>
     <div>
       <dt>Saved character appearance</dt>
-      <dd><code>characters.equipmentCache</code> — fallback only. On this core: 34 slots, 5 values each; display IDs are resolved through <code>ItemAppearance</code>, never treated as item IDs.</dd>
+      <dd><code>characters.equipmentCache</code> — fallback for unreadable inventory tables. On this core: 34 slots, 5 values each; the display ID + subclass + inventory type are resolved through <code>ItemAppearance</code> → <code>ItemModifiedAppearance</code> back to the item template.</dd>
     </div>
     <div>
       <dt>Item icons</dt>

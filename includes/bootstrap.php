@@ -1338,7 +1338,7 @@ function armoryDiagnostics(array $config): array
             $add($checks, 'characters.equipmentCache', in_array($cacheState, ['available', 'empty'], true) ? 'ok' : 'warn',
                 $cacheState . ': ' . $integrity['cache_slots'] . ' saved equipped appearances; '
                 . $integrity['cache_fallback'] . ' used as fallback',
-                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance. These are NOT item IDs. Log out in-game to trigger a character save.');
+                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance. The display ID + subclass + inventory type are resolved back to the item through the bundled DB2 appearance graph, so a character with unreadable inventory tables still shows named gear. Log out in-game to trigger a character save.');
 
             $named = array_filter($equipment, static fn ($i) => (int) $i['entry'] > 0 && $i['source'] !== 'unresolved');
             $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));

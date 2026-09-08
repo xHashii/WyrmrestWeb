@@ -67,21 +67,25 @@ checkSame($before, $pdo->query('SELECT * FROM character_inventory ORDER BY item'
 
 $cacheOnly = getCharacterInventory($config, 2);
 checkSame('empty', $cacheOnly['status']['inventory'], 'Empty inventory is distinguished from a failed query');
-checkSame([0, 15], array_keys($cacheOnly['equipped']), 'A cache-only character still shows equipped appearances, not bags');
-checkSame(0, $cacheOnly['equipped'][15]['entry'], 'Cached display IDs are never relabelled as item IDs');
-checkSame('appearance-cache', $cacheOnly['equipped'][15]['source'], 'Cache source is explicit');
+checkSame([0, 15], array_keys($cacheOnly['equipped']), 'A cache-only character still shows equipped gear, not bags');
+checkSame(25, $cacheOnly['equipped'][15]['entry'], 'A cache-only slot resolves its saved appearance back to the item');
+checkSame('Worn Shortsword', $cacheOnly['equipped'][15]['name'], 'A cache-only slot shows the real item name');
+checkSame('appearance-resolved', $cacheOnly['equipped'][15]['source'], 'Cache-resolved items are labelled as such');
+checkSame('equipment-cache', $cacheOnly['equipped'][15]['equipment_source'], 'Cache-resolved items still record they came from the cache');
 checkSame(2, $cacheOnly['integrity']['cache_fallback'], 'Diagnostics count fallback slots');
-checkSame(-1, $cacheOnly['equipped'][0]['quality'], 'Cached rarity is not guessed from a similar item');
-checkSame(null, averageItemLevel($cacheOnly['equipped']), 'Cache-only appearances have no fake average item level');
+checkSame(2, $cacheOnly['equipped'][0]['quality'], 'A cache-only slot recovers the real item quality');
+checkSame(26, averageItemLevel($cacheOnly['equipped']), 'Cache-resolved items contribute their real item level to the average');
 
 $mixed = getCharacterInventory($config, 3);
 checkSame([15], array_keys($mixed['equipped']), 'Stale cache does not resurrect an unequipped head slot');
 checkSame($sword, $mixed['equipped'][15]['display_id'], 'Actual inventory wins over a different cached appearance');
+checkSame('inventory', $mixed['equipped'][15]['equipment_source'], 'A readable inventory record is never overridden by the cache');
 $broken = getCharacterInventory($config, 4);
 checkSame([0, 7], array_keys($broken['equipped']), 'Broken instance links still occupy their real slots');
 checkSame(2, $broken['integrity']['missing_instance'], 'Missing item records are diagnosed');
 checkSame('equipment-cache', $broken['equipped'][0]['equipment_source'], 'Cache can recover an occupied slot whose instance is missing');
-checkSame(7400, $broken['equipped'][0]['item_guid'], 'A fallback preserves a known broken instance link for diagnostics');
+checkSame(7937, $broken['equipped'][0]['entry'], 'A recovered broken slot resolves its saved appearance to the item');
+checkSame(7400, $broken['equipped'][0]['item_guid'], 'A fallback preserves the known broken instance link');
 checkSame('unresolved', $broken['equipped'][7]['source'], 'A missing instance without a cache is shown as unknown, not empty');
 $custom = getCharacterInventory($config, 5);
 checkSame(999999999, $custom['equipped'][15]['entry'], 'Unknown custom templates remain visible');
@@ -93,7 +97,7 @@ checkSame([], $invalid['equipped'], 'Malformed cache does not invent equipment')
 checkSame(null, findCharacter($config, 11), 'GM profiles remain hidden before any equipment is rendered');
 $trace = armoryTraceName($config, 'Freshmax');
 checkSame(2, $trace['inventory']['integrity']['cache_fallback'], 'The name tracer explains cache-only gear');
-checkSame(0, $trace['equipment'][0]['entry'], 'Diagnostics distinguish unknown item identity from display ID');
+checkSame(7937, $trace['equipment'][0]['entry'], 'Diagnostics show the item a saved appearance resolved to');
 checkSame($head, $trace['equipment'][0]['display_id'], 'Diagnostics expose the real cached display ID');
 
 $pdo->exec('ALTER TABLE characters DROP COLUMN equipmentCache');

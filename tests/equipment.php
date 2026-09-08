@@ -71,14 +71,25 @@ equipmentCheck('https://wow.zamimg.com/images/wow/icons/large/inv_chest_samurai.
 equipmentCheck(null, itemIconUrl(array_replace($config, ['remote_item_icons' => false]), 132759), 'Remote icons can be disabled');
 equipmentCheck('images/items/135274.png', itemIconUrl(array_replace($config, ['remote_item_icons' => false]), 135274), 'Bundled local icons work even when remote icons are disabled');
 equipmentCheck(null, itemIconUrl($config, 0), 'Unknown icons use the local slot outline');
+// A saved appearance (display 1542, subclass 7, inventory type 21) is walked
+// back through the client appearance graph to the item that produced it.
 $appearance = cachedAppearanceItem($config, 15, $parsed[15]);
-equipmentCheck(0, $appearance['entry'], 'A display ID must NEVER be turned into a guessed item ID');
-equipmentCheck(-1, $appearance['quality'], 'Cache-only rarity is unknown, not made up');
-equipmentCheck(0, $appearance['item_level'], 'Cache-only item level is unknown');
-equipmentCheck('appearance-cache', $appearance['source'], 'Cache-only visuals are explicitly identified');
-equipmentCheck(135274, $appearance['icon_file_data_id'], 'A cached display ID can recover its icon without inventing an item');
-equipmentCheck(null, averageItemLevel([15 => $appearance]), 'Unknown cache-only items do not contaminate average item level');
+equipmentCheck(25, $appearance['entry'], 'A saved appearance resolves back to its item via the DB2 appearance graph');
+equipmentCheck('Worn Shortsword', $appearance['name'], 'A resolved appearance shows the real item name, not a placeholder');
+equipmentCheck(1, $appearance['quality'], 'A resolved appearance carries the real item quality');
+equipmentCheck(2, $appearance['item_level'], 'A resolved appearance carries the real item level');
+equipmentCheck('appearance-resolved', $appearance['source'], 'Items recovered from the appearance cache are labelled as such');
+equipmentCheck('equipment-cache', $appearance['equipment_source'], 'The recovered item still records that it came from the equipment cache');
+equipmentCheck(135274, $appearance['icon_file_data_id'], 'A resolved appearance keeps the correct item icon');
+equipmentCheck(1542, $appearance['display_id'], 'The character\'s saved display ID is preserved');
+equipmentCheck(2, averageItemLevel([15 => $appearance]), 'Resolved cache items contribute their real item level to the average');
 equipmentCheck([[21, 1542], [22, 1542]], equipmentModelItems([15 => $appearance, 16 => $appearance, 1 => $appearance]), 'Viewer gets display IDs and proper weapon slots, not character slot indexes or jewelry');
+
+// A look nothing in the export shares stays a visible slot rather than vanishing.
+$unmatched = cachedAppearanceItem($config, 0, ['inventory_type' => 1, 'display_id' => 99999999, 'enchant_visual' => 0, 'subclass' => 4, 'secondary_appearance_id' => 0]);
+equipmentCheck(0, $unmatched['entry'], 'An unknown appearance is not forced onto an unrelated item');
+equipmentCheck('appearance-cache', $unmatched['source'], 'An unresolved appearance is still shown as a saved appearance');
+equipmentCheck(0, resolveItemFromAppearance($config, 0), 'A zero display ID resolves to no item');
 
 // A tiny alternate export tests default-appearance selection and read-only cache fallback.
 $fixtureDir = $work . '/db2';

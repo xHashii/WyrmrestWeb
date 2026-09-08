@@ -48,24 +48,6 @@ require __DIR__ . '/includes/header.php';
       Names are matched without caring about capitalisation. The character may
       be unavailable, deleted, or hidden from the Armory.
     </p>
-    <?php if (!empty($config['debug'])): ?>
-      <?php $reason = armoryLookupReason(); ?>
-      <?php if ($reason === 'hidden-gm'): ?>
-        <p class="roster-empty" style="margin-bottom: 14px; color: var(--gold-bright);">
-          Debug: that character exists, but its account is a Game Master and
-          <code>hide_game_masters</code> is enabled in <code>config.php</code>.
-        </p>
-      <?php elseif ($reason === 'no-db'): ?>
-        <p class="roster-empty" style="margin-bottom: 14px; color: var(--gold-bright);">
-          Debug: the characters database could not be reached at all.
-          <a href="armory-diagnostics.php">Run the diagnostics</a>.
-        </p>
-      <?php elseif ($name !== ''): ?>
-        <p class="roster-empty" style="margin-bottom: 14px;">
-          Debug: <a href="armory-diagnostics.php?name=<?= urlencode($name) ?>">trace this lookup</a>.
-        </p>
-      <?php endif; ?>
-    <?php endif; ?>
     <form method="GET" action="armory.php" class="armory-search">
       <input type="hidden" name="type" value="character">
       <input type="text" name="q" value="<?= htmlspecialchars($searchTerm) ?>"
@@ -83,8 +65,6 @@ require __DIR__ . '/includes/header.php';
     $zonesLookup = file_exists(__DIR__ . '/data/zones.php') ? require __DIR__ . '/data/zones.php' : [];
     $zoneId = (int) $character['zone'];
     $goldTotal = (int) ($character['money'] ?? 0);
-    $cacheCount = (int) $inventory['integrity']['cache_fallback'];
-    $unresolved = array_filter($equipment, static fn ($i) => $i['source'] === 'unresolved');
     $enable3d = !empty($config['enable_3d_viewer']) && in_array($raceId, [1, 2, 3, 4, 5, 6, 7, 8, 10, 11], true);
   ?>
   <header class="character-overview">
@@ -121,24 +101,15 @@ require __DIR__ . '/includes/header.php';
       <?php else: ?>
         <span class="equipment-count">Equipment overview</span>
       <?php endif; ?>
-      <span class="equipment-count"><?= count($equipment) ?> / 19 saved slots<?php if ($cacheCount): ?> · <?= $cacheCount ?> cached appearance<?= $cacheCount === 1 ? '' : 's' ?><?php endif; ?></span>
+      <span class="equipment-count"><?= count($equipment) ?> / 19 equipped</span>
     </div>
     <p class="equipment-hint">Hover, tap or focus a slot to inspect it. This is saved realm data; after changing gear in-game, log out and refresh.</p>
     <p class="equipment-hint" id="model-disclaimer" hidden>3D preview uses a base model for this race and body type, plus the available equipment appearances. Face, hair and other customizations are not applied. Model assets are provided by Wowhead.</p>
 
-    <?php if ($cacheCount): ?>
-      <div class="equipment-notice" role="status">
-        <strong>Showing saved appearances for <?= $cacheCount ?> slot<?= $cacheCount === 1 ? '' : 's' ?>.</strong>
-        <p>Inventory details are unavailable for these slots. A dashed border and “C” mark a cached appearance, not an identified item. The cache can be older than your in-game gear.</p>
-        <p>Log out to let the worldserver save, then refresh. <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">Check this character's equipment data</a>.</p>
-      </div>
-    <?php elseif ($inventory['status']['inventory'] === 'unavailable'): ?>
-      <div class="equipment-notice" role="status">Equipment data could not be read. This does not mean the character is unequipped. <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">Check the equipment data</a>.</div>
+    <?php if (!$equipment && $inventory['status']['inventory'] === 'unavailable'): ?>
+      <div class="equipment-notice" role="status">Equipment data isn't available for this character right now. This does not mean they are unequipped — check back after they next log out in-game.</div>
     <?php elseif (!$equipment): ?>
-      <div class="equipment-notice" role="status">No saved equipment was found. If this character has gear in-game, log out and refresh, or <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">check its saved data</a>.</div>
-    <?php endif; ?>
-    <?php if ($unresolved): ?>
-      <p class="equipment-hint"><?= count($unresolved) ?> occupied slot<?= count($unresolved) === 1 ? ' has' : 's have' ?> unavailable item details. The slots are still shown; <a href="armory-diagnostics.php?name=<?= urlencode($character['name']) ?>">diagnostics</a> explains which records or item definitions are missing.</p>
+      <div class="equipment-notice" role="status">No saved equipment was found. If this character has gear in-game, log out and refresh.</div>
     <?php endif; ?>
     <?php require __DIR__ . '/includes/db-errors.php'; ?>
   </section>
