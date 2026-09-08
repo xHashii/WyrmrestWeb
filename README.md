@@ -524,6 +524,16 @@ Pure PHP/CSV tests (no database or network required):
 php tests/equipment.php
 ```
 
+`tests/wowhead-tooltip.php` exercises the Wowhead tooltip pipeline with fixture
+payloads only (no network): locale mapping, strict JSON-only parsing (a whole
+HTML item page must parse to "no tooltip", never render inside a gear slot),
+the sanitizer and link absolutising, the tooltip shape guard, and the cache
+format versioning that retires stale/bad entries without waiting for the TTL:
+
+```sh
+php tests/wowhead-tooltip.php
+```
+
 Database integration tests, using the same `ARMORY_TEST_DB_*` settings above
 and a dedicated, otherwise empty MySQL/MariaDB test database:
 

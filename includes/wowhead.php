@@ -5,11 +5,13 @@
  * The character page's gear tooltip used to show only a "View on Wowhead"
  * link. This module fetches Wowhead's *own* item tooltip — the exact stat
  * block, equip effects and colour coding players see on the site — and
- * renders it inside our tooltip. We ask Wowhead for the JSON tooltip variant
- * (the `&json` endpoint returns the tooltip HTML when the request looks like
- * one of Wowhead's own AJAX calls via `X-Requested-With: XMLHttpRequest`),
- * sanitise it down to a safe subset, and cache it on disk so a character page
- * never has to hit Wowhead more than once per item.
+ * renders it inside our tooltip. We use the JSON tooltip API that serves the
+ * Wowhead sites themselves (nether.wowhead.com/wotlk/tooltip/item/<id>):
+ * it returns just the tooltip markup for the item, never the surrounding
+ * item page, so a gear tooltip can never end up showing the page's
+ * comments, screenshots or other chrome. The tooltip markup is sanitised
+ * down to a safe subset and cached on disk so a character page never has to
+ * hit Wowhead more than once per item.
  *
  * Everything fails soft: no cURL, no network, a rate limit or a changed
  * endpoint simply means the tooltip falls back to the name / quality / item
@@ -23,6 +25,26 @@ function wowheadItemLocale(array $config): string
     $locale = (string) ($config['wowhead_locale'] ?? 'en');
     return preg_match('/^[a-z]{2}(?:_[a-z]{2})?$/', $locale) ? $locale : 'en';
 }
+
+/**
+ * Numeric locale id for the nether tooltip API. Wowhead serves the WotLK
+ * tooltips in a handful of languages; anything outside that set falls back
+ * to English (id 0).
+ */
+function wowheadTooltipNetherLocale(string $locale): int
+{
+    $ids = ['en' => 0, 'fr' => 2, 'de' => 3, 'es' => 6, 'ru' => 7, 'ko' => 1, 'zh' => 4];
+    return $ids[strtolower(substr($locale, 0, 2))] ?? 0;
+}
+
+/**
+ * Cache format version. Bumped whenever the stored shape or the remote
+ * markup changes: entries written by an older format are ignored and
+ * fetched again instead of lingering for the whole TTL. This is what retires
+ * bad cached tooltips — for example a whole Wowhead page saved by an earlier
+ * bug — without waiting for the cache to expire.
+ */
+const WOWHEAD_CACHE_FMT = 2;
 
 /** Cache lives under cache/wowhead/ so it piggy-backs on the writable cache dir. */
 function wowheadItemCacheDir(array $config): string
@@ -38,9 +60,13 @@ function wowheadItemCachePath(array $config, int $entry, string $locale): string
 
 /**
  * Read a cached tooltip. Returns:
- *   - an array with 'ok' => true  when a fresh, successful tooltip is cached
+ *   - an array with 'ok' => true  when a fresh, usable tooltip is cached
  *   - ['__skip' => true]           when a recent fetch already failed (back off)
  *   - null                         when there is nothing cached (go fetch)
+ *
+ * Entries written by an older cache format — or whose stored fragment is not
+ * a tooltip-shaped table — are treated as missing, so the next page load
+ * simply refetches them.
  */
 function wowheadItemCacheRead(array $config, int $entry, string $locale): ?array
 {
@@ -57,7 +83,9 @@ function wowheadItemCacheRead(array $config, int $entry, string $locale): ?array
     $failTtl = (int) ($config['wowhead_fail_ttl'] ?? 3600);
 
     if (!empty($data['ok'])) {
-        return $age < $ttl ? $data : null;
+        $fresh = $age < $ttl && (int) ($data['fmt'] ?? 0) === WOWHEAD_CACHE_FMT;
+        $shaped = is_string($data['html'] ?? null) && looksLikeWowheadTooltipHtml($data['html']);
+        return $fresh && $shaped ? $data : null;
     }
     return $age < $failTtl ? ['__skip' => true] : null;
 }
@@ -73,7 +101,7 @@ function wowheadItemCacheWrite(array $config, int $entry, string $locale, ?array
         return;
     }
     $file = wowheadItemCachePath($config, $entry, $locale);
-    $out = ['entry' => $entry, 'locale' => $locale, 'cached_at' => time(), 'ok' => $data !== null];
+    $out = ['entry' => $entry, 'locale' => $locale, 'cached_at' => time(), 'fmt' => WOWHEAD_CACHE_FMT, 'ok' => $data !== null];
     if ($data) {
         $out['name'] = $data['name'] ?? null;
         $out['icon'] = $data['icon'] ?? null;
@@ -157,6 +185,11 @@ function fetchWowheadTooltipRemote(array $config, int $entry, string $locale): ?
 /**
  * Fetch several Wowhead tooltips at once. Returns entry => parsed tooltip
  * array (only the entries that succeeded). Returns [] when cURL is missing.
+ *
+ * Requests go to the JSON tooltip API the Wowhead sites themselves use
+ * (nether.wowhead.com/wotlk/tooltip/item/<id>?locale=<n>). It needs no AJAX
+ * headers and — unlike an item *page* — it never contains anything beyond
+ * the tooltip itself, which is what makes the response safe to render.
  */
 function fetchWowheadTooltipsRemoteMulti(array $config, array $entries, string $locale): array
 {
@@ -166,12 +199,13 @@ function fetchWowheadTooltipsRemoteMulti(array $config, array $entries, string $
 
     $ua = 'Mozilla/5.0 (compatible; WyrmrestWeb/' . (int) ($config['realm_id'] ?? 1)
         . '; +https://github.com/xHashii/WyrmrestWeb)';
-    $referer = 'https://www.wowhead.com/';
 
     $mh = curl_multi_init();
     $handles = [];
     foreach ($entries as $entry) {
-        $ch = curl_init('https://www.wowhead.com/wotlk/item=' . $entry . '&json&locale=' . $locale);
+        $url = 'https://nether.wowhead.com/wotlk/tooltip/item/' . $entry
+            . '?locale=' . wowheadTooltipNetherLocale($locale);
+        $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => (int) ($config['wowhead_timeout'] ?? 10),
@@ -179,9 +213,7 @@ function fetchWowheadTooltipsRemoteMulti(array $config, array $entries, string $
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 4,
             CURLOPT_HTTPHEADER => [
-                'X-Requested-With: XMLHttpRequest',
                 'Accept: application/json, text/plain, */*',
-                'Referer: ' . $referer,
                 'User-Agent: ' . $ua,
             ],
         ]);
@@ -215,9 +247,16 @@ function fetchWowheadTooltipsRemoteMulti(array $config, array $entries, string $
 }
 
 /**
- * Turn a Wowhead response body into a tidy tooltip array. Prefers the JSON
- * `tooltip` field; if that's absent (e.g. an HTML page slipped through) we try
- * to salvage any tooltip-shaped markup. Returns null when there's nothing usable.
+ * Turn a Wowhead tooltip API response body into a tidy tooltip array.
+ *
+ * The nether API answers with JSON — { name, quality, icon, tooltip: "<html>" }
+ * or { error: ... } for unknown entries — and we only ever accept that exact
+ * JSON shape. Anything else (an HTML page, an error page, an empty reply)
+ * returns null, which the caller treats as "no tooltip": the gear slot falls
+ * back to the name / quality / item level it already knows. This strictness
+ * matters: a whole Wowhead item page with comments, screenshots and related
+ * links must never be mistaken for a tooltip and rendered (or cached)
+ * inside a gear slot.
  */
 function parseWowheadTooltipBody(string $body): ?array
 {
@@ -227,35 +266,57 @@ function parseWowheadTooltipBody(string $body): ?array
     }
 
     $json = json_decode($body, true);
-    if (is_array($json)) {
-        $tooltip = $json['tooltip'] ?? $json['html'] ?? null;
-        if (is_string($tooltip) && $tooltip !== '') {
-            $html = sanitizeWowheadTooltipHtml($tooltip);
-            if ($html !== '') {
-                return [
-                    'name' => isset($json['name']) ? (string) $json['name'] : null,
-                    'icon' => isset($json['icon']) ? (string) $json['icon'] : null,
-                    'quality' => isset($json['quality']) ? (int) $json['quality'] : null,
-                    'html' => $html,
-                ];
-            }
-        }
+    if (!is_array($json) || isset($json['error'])) {
+        return null;
+    }
+    $tooltip = $json['tooltip'] ?? null;
+    if (!is_string($tooltip) || trim($tooltip) === '') {
+        return null;
     }
 
-    // Non-JSON fallback: salvage embedded tooltip markup.
-    $html = sanitizeWowheadTooltipHtml($body);
-    return $html !== '' ? ['name' => null, 'icon' => null, 'quality' => null, 'html' => $html] : null;
+    $html = sanitizeWowheadTooltipHtml($tooltip);
+    if (!looksLikeWowheadTooltipHtml($html)) {
+        return null;
+    }
+
+    return [
+        'name' => isset($json['name']) ? (string) $json['name'] : null,
+        'icon' => isset($json['icon']) ? (string) $json['icon'] : null,
+        'quality' => isset($json['quality']) ? (int) $json['quality'] : null,
+        'html' => $html,
+    ];
+}
+
+/**
+ * Cheap shape guard for a sanitised tooltip fragment. Real Wowhead item
+ * tooltips are one or more <table> blocks; a fragment that starts with
+ * anything else, carries page-level markup, or runs away in size could only
+ * have come from an unexpected payload — refuse to store or render it.
+ */
+function looksLikeWowheadTooltipHtml(string $html): bool
+{
+    $html = trim($html);
+    if ($html === '' || strlen($html) > 65536) {
+        return false;
+    }
+    if (stripos($html, '<table') !== 0) {
+        return false;
+    }
+    return preg_match('#<(?:html|head|body|script|iframe|form)\b#i', $html) !== 1;
 }
 
 /**
  * Strip a Wowhead tooltip down to a safe, self-contained HTML fragment.
  *
- * Wowhead renders its tooltip as a single-column <table> whose colour comes
- * from `class="q0"` … `class="q7"` (the standard WoW quality colours we also
- * use for the slot borders). We keep exactly that structure and those classes,
- * drop every event handler / inline style / script / iframe, and only keep
- * <a> links that point back to wowhead.com — so the rendered block matches
- * Wowhead visually without letting any of its markup execute in our page.
+ * Wowhead renders its tooltip as <table> blocks whose colour comes from
+ * `class="q"` / `class="q0"` … `class="q7"` (the standard WoW quality
+ * colours we also use for the slot borders). We keep that structure and
+ * those classes, drop every event handler / inline style / script / iframe,
+ * and only keep <a> links that point back to wowhead.com — absolutising the
+ * tooltip's relative /wotlk/… paths. The internal <!--stat7-->-style
+ * markers Wowhead embeds in the markup are plain HTML comments and are
+ * removed with everything else, so the rendered block matches Wowhead
+ * visually without letting any of its markup execute in our page.
  */
 function sanitizeWowheadTooltipHtml(string $html): string
 {
@@ -280,7 +341,27 @@ const WOWHEAD_ALLOWED_TAGS = [
     'div', 'small', 'i', 'em', 'a', 'font', 'p',
 ];
 
-const WOWHEAD_SAFE_HREF = '#^https?://([a-z0-9.-]+\.)?wowhead\.com/#i';
+/** Class tokens that carry Wowhead's own meaning and quality colours. */
+const WOWHEAD_KEEP_CLASS = '#^(?:q[0-7]|q|wowhead-tooltip|indent)$#';
+
+/**
+ * Normalise a tooltip link to an absolute https://www.wowhead.com URL.
+ * The tooltip markup links to other Wowhead pages with relative paths
+ * (/wotlk/...), which only make sense absolutised. Anything foreign returns ''
+ * so the sanitizer drops the href entirely — tooltip links can never point
+ * off wowhead.com or into an unknown protocol.
+ */
+function wowheadAbsoluteHref(string $href): string
+{
+    $href = trim($href);
+    if (preg_match('#^(https?:)?//([a-z0-9.-]+\.)?wowhead\.com/#i', $href)) {
+        return preg_match('#^https?:#i', $href) ? $href : 'https:' . $href;
+    }
+    if (preg_match('#^/(?:wotlk|classic|tbc|cata)/#i', $href)) {
+        return 'https://www.wowhead.com' . $href;
+    }
+    return '';
+}
 
 /** DOM-based sanitiser — the accurate path when libxml is available. */
 function sanitizeWowheadTooltipDom(string $html): string
@@ -346,16 +427,19 @@ function sanitizeWowheadNode(DOMNode $node): ?DOMNode
                 $tokens = array_filter(
                     array_map('trim', preg_split('/\s+/', $value)),
                     static function (string $t): bool {
-                        return preg_match('/^(?:q[0-7]|wowhead-tooltip|indent)$/', $t) === 1;
+                        return preg_match(WOWHEAD_KEEP_CLASS, $t) === 1;
                     }
                 );
                 if ($tokens) {
                     $clone->setAttribute('class', implode(' ', $tokens));
                 }
-            } elseif ($name === 'href' && $tag === 'a' && preg_match(WOWHEAD_SAFE_HREF, $value)) {
-                $clone->setAttribute('href', $value);
-                $clone->setAttribute('target', '_blank');
-                $clone->setAttribute('rel', 'noopener noreferrer');
+            } elseif ($name === 'href' && $tag === 'a') {
+                $href = wowheadAbsoluteHref($value);
+                if ($href !== '') {
+                    $clone->setAttribute('href', $href);
+                    $clone->setAttribute('target', '_blank');
+                    $clone->setAttribute('rel', 'noopener noreferrer');
+                }
             }
             // every other attribute (style, on*, data-*, src, …) is dropped
         }
@@ -383,8 +467,9 @@ function domInnerHtml(DOMNode $node): string
 
 /**
  * Regex fallback used only when DOMDocument is unavailable or threw. It keeps
- * the allowed tags, preserves only `class="qN"` and safe <a> hrefs, and strips
- * every other attribute — safe, if a little less faithful to the structure.
+ * the allowed tags, preserves only `class="qN"`/`class="q"` and wowhead.com
+ * <a> hrefs, and strips every other attribute — safe, if a little less
+ * faithful to the structure.
  */
 function sanitizeWowheadTooltipRegex(string $html): string
 {
@@ -398,11 +483,13 @@ function sanitizeWowheadTooltipRegex(string $html): string
                 return '';
             }
             $attr = '';
-            if (preg_match('/\bclass=["\'](q[0-7]|wowhead-tooltip|indent)["\']/i', $m[2], $cm)) {
+            if (preg_match('/\bclass=["\'](q[0-7]|q|wowhead-tooltip|indent)["\']/i', $m[2], $cm)) {
                 $attr = ' class="' . strtolower($cm[1]) . '"';
-            } elseif ($tag === 'a' && preg_match('/href=["\']([^"\']+)["\']/i', $m[2], $hu)
-                && preg_match(WOWHEAD_SAFE_HREF, $hu[1])) {
-                $attr = ' href="' . $hu[1] . '" target="_blank" rel="noopener noreferrer"';
+            } elseif ($tag === 'a' && preg_match('/href=["\']([^"\']+)["\']/i', $m[2], $hu)) {
+                $href = wowheadAbsoluteHref($hu[1]);
+                if ($href !== '') {
+                    $attr = ' href="' . $href . '" target="_blank" rel="noopener noreferrer"';
+                }
             }
             return '<' . $tag . $attr . '>';
         },
