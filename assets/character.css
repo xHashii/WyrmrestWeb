@@ -51,12 +51,15 @@
 
 /* Wowhead item stat block, rendered inside the gear tooltip. It mirrors
    Wowhead's own tooltip — same stat lines, equip effects and quality colours
-   (the q0–q7 classes map 1:1 to the slot-border colours used above). */
+   (the q0–q7 classes map 1:1 to the slot-border colours used above). The
+   tooltip API nests a small "name + phase" table inside the first row, so
+   cells stay real table cells instead of being flattened to blocks. */
 .wowhead-stats { margin-top: 3px; color: #f1efe8; font-size: 12px; line-height: 1.55; }
 .wowhead-stats table { width: 100%; border: 0; border-collapse: collapse; border-spacing: 0; }
-.wowhead-stats tbody, .wowhead-stats tr, .wowhead-stats td { display: block; padding: 0; border: 0; text-align: left; }
-.wowhead-stats td { margin: 0; }
-.wowhead-stats td + td { margin-top: 0; }
+.wowhead-stats tbody, .wowhead-stats tr { padding: 0; border: 0; }
+.wowhead-stats td, .wowhead-stats th { padding: 0; border: 0; vertical-align: top; text-align: left; }
+.wowhead-stats table table { width: 100%; }
+.wowhead-stats th { text-align: right; font-weight: 600; white-space: nowrap; }
 .wowhead-stats br { line-height: 1.55; }
 .wowhead-stats b, .wowhead-stats strong { font-weight: 600; }
 .wowhead-stats a { color: #a9c9fc; text-decoration: none; }

@@ -121,15 +121,18 @@ return [
 
     /**
      * Show the full item stats inside each gear slot's tooltip, pulled from
-     * Wowhead (the exact stat block, equip effects and quality colours players
-     * see on the site). PHP cURL + outbound HTTPS to wowhead.com are required
-     * — the same reach the 3D viewer already relies on. Results are cached on
-     * disk (cache/wowhead/) so each item is fetched at most once. If the fetch
-     * fails for any reason the tooltip simply falls back to the name / quality
-     * / item level the Armory already resolves, so the page never breaks.
+     * Wowhead's tooltip API (nether.wowhead.com/wotlk/tooltip/item/<id> — the
+     * same endpoint the Wowhead sites use, returning only the tooltip markup,
+     * never the whole item page). PHP cURL + outbound HTTPS to nether.wowhead
+     * .com are required — the same reach the 3D viewer already relies on.
+     * Results are cached on disk (cache/wowhead/) so each item is fetched at
+     * most once; a format bump makes stale/foreign cached entries refetch. If
+     * the fetch fails for any reason the tooltip simply falls back to the
+     * name / quality / item level the Armory already resolves, so the page
+     * never breaks.
      */
     'wowhead_tooltips' => true,   // set false to keep the old link-only tooltip
-    'wowhead_locale'  => 'en',    // tooltip language (en, de, fr, es, ru, …)
+    'wowhead_locale'  => 'en',    // tooltip language: en, de, es, fr, ko, ru, zh
     // 'wowhead_cache_ttl' => 86400 * 30,   // how long a good tooltip stays cached
     // 'wowhead_fail_ttl'  => 3600,         // back off before retrying a failed item
     // 'wowhead_timeout'       => 10,       // per-request timeout (seconds)
