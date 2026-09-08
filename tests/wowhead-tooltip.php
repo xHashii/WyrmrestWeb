@@ -43,9 +43,10 @@ wowheadCheck(0, wowheadTooltipNetherLocale('pt'), 'Unsupported locales fall back
 wowheadCheck(0, wowheadTooltipNetherLocale(''), 'Empty locale falls back to English');
 
 // A realistic nether-API tooltip payload: nested name/phase table, comment
-// markers, q-class colours, a relative socket link, plain extra rows.
+// markers, q-class colours, relative socket links, money classes on the sell
+// price, muted extra rows.
 $tooltipHtml = <<<'HTML'
-<table><tr><td><table><tr><td><!--nstart--><b class="q4">Rot-Resistant Breastplate</b><!--nend--></td><th><b class="q0 whtt-extra">Phase 4</b></th></tr></table><br><span class="q2">Heroic</span><span class="q"><br>Item Level <!--ilvl-->277</span><br>Binds when picked up<table><tr><td>Chest</td><th><span class="q1">Plate</span></th></tr></table><span><!--amr-->2756 Armor</span><br><span><!--stat7-->+139 Stamina</span><br><span><!--stat5-->+139 Intellect</span><br><a href="/wotlk/items/gems?filter=81;4;0" class="socket-blue q0">Blue Socket</a><br><span class="q0">Socket Bonus: +9 Spell Power</span><br>Durability 165 / 165</td></tr></table><table><tr><td>Requires Level <!--rlvl-->80<br><span class="q2">Equip: Improves critical strike rating by <!--rtg32-->106.</span><br><span class="q2">Equip: Increases spell power by <!--rtg45-->185.</span><div class="whtt-sellprice">Sell Price: <span class="moneygold">18</span> <span class="moneysilver">89</span> <span class="moneycopper">5</span></div><div class="whtt-extra whtt-droppedby">Dropped by: Rotface</div><div class="whtt-extra whtt-dropchance">Drop Chance: 2.95%</div></td></tr></table><!--i?50680:1:80:80-->
+<table><tr><td><table><tr><td><!--nstart--><b class="q4">Rot-Resistant Breastplate</b><!--nend--></td><th><b class="q0 whtt-extra">Phase 4</b></th></tr></table><br><span class="q2">Heroic</span><span class="q"><br>Item Level <!--ilvl-->277</span><br>Binds when picked up<table><tr><td>Chest</td><th><span class="q1">Plate</span></th></tr></table><span><!--amr-->2756 Armor</span><br><span><!--stat7-->+139 Stamina</span><br><span><!--stat5-->+139 Intellect</span><br><a href="/wotlk/items/gems?filter=81;4;0" class="socket-blue q0">Blue Socket</a><br><a href="/wotlk/items/gems?filter=81;3;0" class="socket-yellow q0">Yellow Socket</a><br><a href="/wotlk/items/gems?filter=81;2;0" class="socket-red q0">Red Socket</a><br><span class="q0">Socket Bonus: +9 Spell Power</span><br>Durability 165 / 165</td></tr></table><table><tr><td>Requires Level <!--rlvl-->80<br><span class="q2">Equip: Improves critical strike rating by <!--rtg32-->106.</span><br><span class="q2">Equip: Increases spell power by <!--rtg45-->185.</span><div class="whtt-sellprice">Sell Price: <span class="moneygold">18</span> <span class="moneysilver">89</span> <span class="moneycopper">5</span></div><div class="whtt-extra whtt-droppedby">Dropped by: Rotface</div><div class="whtt-extra whtt-dropchance">Drop Chance: 2.95%</div></td></tr></table><!--i?50680:1:80:80-->
 HTML;
 $apiBody = json_encode([
     'name' => 'Rot-Resistant Breastplate',
@@ -71,6 +72,31 @@ wowheadCheck(
     true,
     strpos($html, 'href="https://www.wowhead.com/wotlk/items/gems?filter=81;4;0"') !== false,
     'Relative /wotlk/ tooltip links are absolutised to wowhead.com'
+);
+wowheadCheck(true, strpos($html, 'class="socket-blue q0"') !== false, 'Socket links keep the class tokens behind Wowhead\'s gem icons');
+wowheadCheck(true, strpos($html, 'class="socket-red q0"') !== false, 'Every socket colour keeps its class token');
+wowheadCheck(
+    true,
+    strpos($html, 'class="moneygold"') !== false
+        && strpos($html, 'class="moneysilver"') !== false
+        && strpos($html, 'class="moneycopper"') !== false,
+    'Sell price keeps the money classes behind Wowhead\'s coin icons'
+);
+wowheadCheck(true, strpos($html, 'class="whtt-extra whtt-droppedby"') !== false, 'Muted extra rows keep their whtt- classes');
+wowheadCheck(true, stripos($html, 'phase') === false, 'The Phase N title-row marker is stripped');
+wowheadCheck(true, strpos($html, '<th></th>') === false, 'The title cell that only held the phase marker is stripped too');
+
+// The no-libxml fallback must agree with the DOM path on all of the above.
+$commentFree = (string) preg_replace('#<!--.*?-->#s', '', $tooltipHtml);
+$fallback = sanitizeWowheadTooltipRegex($commentFree);
+wowheadCheck(true, stripos($fallback, 'phase') === false, 'Regex fallback strips the phase marker');
+wowheadCheck(true, strpos($fallback, '<th></th>') === false, 'Regex fallback strips the emptied phase cell');
+wowheadCheck(true, strpos($fallback, 'class="moneygold"') !== false, 'Regex fallback keeps the money classes');
+wowheadCheck(true, strpos($fallback, 'class="socket-blue q0"') !== false, 'Regex fallback keeps the socket classes');
+wowheadCheck(
+    true,
+    strpos($fallback, 'href="https://www.wowhead.com/wotlk/items/gems?filter=81;4;0"') !== false,
+    'Regex fallback absolutises links (and keeps their class alongside)'
 );
 wowheadCheck(true, looksLikeWowheadTooltipHtml($html), 'Sanitised fragment passes the shape guard');
 wowheadCheck(true, looksLikeWowheadTooltipHtml('<table><tr><td>x</td></tr></table>'), 'Bare tooltip table passes the shape guard');
@@ -108,9 +134,16 @@ $legacy = ['entry' => 50680, 'locale' => 'en', 'cached_at' => time(), 'ok' => tr
     'html' => 'Skip to Main Content<p>This site makes extensive use of JavaScript.</p><table><tr><td>Quick Facts</td></tr></table>'];
 file_put_contents($file, json_encode($legacy));
 wowheadCheck(null, wowheadItemCacheRead($config2, 50680, 'en'), 'Legacy-format cache entries are treated as missing');
-$legacyPage = ['entry' => 50680, 'locale' => 'en', 'cached_at' => time(), 'fmt' => 2, 'ok' => true,
+$legacyPage = ['entry' => 50680, 'locale' => 'en', 'cached_at' => time(), 'fmt' => WOWHEAD_CACHE_FMT, 'ok' => true,
     'html' => 'Skip to Main Content<p>This site makes extensive use of JavaScript.</p><table><tr><td>Quick Facts</td></tr></table>'];
 file_put_contents($file, json_encode($legacyPage));
 wowheadCheck(null, wowheadItemCacheRead($config2, 50680, 'en'), 'Non-table cache fragments are treated as missing');
+
+// ...and entries from an older cache format — e.g. v2, sanitised before the
+// money/socket classes were kept and the phase marker removed — are refetched.
+$oldFmt = ['entry' => 50680, 'locale' => 'en', 'cached_at' => time(), 'fmt' => WOWHEAD_CACHE_FMT - 1, 'ok' => true,
+    'html' => $html];
+file_put_contents($file, json_encode($oldFmt));
+wowheadCheck(null, wowheadItemCacheRead($config2, 50680, 'en'), 'Older cache-format entries are treated as missing and refetched');
 
 echo "PASS: wowhead tooltip fetch/parse/cache guards ({$checks} checks)\n";

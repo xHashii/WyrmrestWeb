@@ -51,17 +51,17 @@
 
 /* Wowhead item stat block, rendered inside the gear tooltip. It mirrors
    Wowhead's own tooltip — same stat lines, equip effects and quality colours
-   (the q0–q7 classes map 1:1 to the slot-border colours used above). The
-   tooltip API nests a small "name + phase" table inside the first row, so
-   cells stay real table cells instead of being flattened to blocks. */
-.wowhead-stats { margin-top: 3px; color: #f1efe8; font-size: 12px; line-height: 1.55; }
+   (the q0–q7 classes map 1:1 to the slot-border colours used above), same
+   tight line rhythm, coin glyphs after sell-price amounts and gem glyphs
+   before socket lines. The tooltip API nests the item name in its own table
+   row, so cells stay real table cells instead of being flattened to blocks. */
+.wowhead-stats { margin-top: 3px; color: #f1efe8; font-size: 12px; line-height: 1.4; }
 .wowhead-stats table { width: 100%; border: 0; border-collapse: collapse; border-spacing: 0; }
 .wowhead-stats tbody, .wowhead-stats tr { padding: 0; border: 0; }
 .wowhead-stats td, .wowhead-stats th { padding: 0; border: 0; vertical-align: top; text-align: left; }
 .wowhead-stats table table { width: 100%; }
-.wowhead-stats th { text-align: right; font-weight: 600; white-space: nowrap; }
-.wowhead-stats br { line-height: 1.55; }
-.wowhead-stats b, .wowhead-stats strong { font-weight: 600; }
+.wowhead-stats th { text-align: right; font-weight: 400; white-space: nowrap; }
+.wowhead-stats b, .wowhead-stats strong { font-weight: 700; }
 .wowhead-stats a { color: #a9c9fc; text-decoration: none; }
 .wowhead-stats a:hover { text-decoration: underline; }
 .wowhead-stats .indent { padding-left: 12px; }
@@ -74,6 +74,38 @@
 .wowhead-stats .q5 { color: #ff8000; }
 .wowhead-stats .q6 { color: #e6cc80; }
 .wowhead-stats .q7 { color: #00ccff; }
+/* Coin + socket glyphs. Wowhead's tooltip markup carries money* / socket-*
+   class tokens (the sanitizer keeps them) and paints the icons as background
+   images; we point at the same icon CDN the item art uses. Spacing mirrors
+   Wowhead's tooltip: the coin sits just right of its amount, the gem just
+   left of its socket line, both optically centred on the text. */
+.wowhead-stats .moneygold, .wowhead-stats .moneysilver, .wowhead-stats .moneycopper {
+  padding-right: 17px;
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 14px 14px;
+}
+.wowhead-stats .moneygold { background-image: url('https://wow.zamimg.com/images/icons/money-gold.gif'); }
+.wowhead-stats .moneysilver { background-image: url('https://wow.zamimg.com/images/icons/money-silver.gif'); }
+.wowhead-stats .moneycopper { background-image: url('https://wow.zamimg.com/images/icons/money-copper.gif'); }
+.wowhead-stats .whtt-sellprice { white-space: nowrap; }
+.wowhead-stats .socket-red, .wowhead-stats .socket-yellow, .wowhead-stats .socket-blue,
+.wowhead-stats .socket-meta, .wowhead-stats .socket-prismatic,
+.wowhead-stats .socket-cogwheel, .wowhead-stats .socket-hydraulic {
+  padding-left: 19px;
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: 15px 15px;
+}
+.wowhead-stats .socket-red { background-image: url('https://wow.zamimg.com/images/icons/socket-red.gif'); }
+.wowhead-stats .socket-yellow { background-image: url('https://wow.zamimg.com/images/icons/socket-yellow.gif'); }
+.wowhead-stats .socket-blue { background-image: url('https://wow.zamimg.com/images/icons/socket-blue.gif'); }
+.wowhead-stats .socket-meta { background-image: url('https://wow.zamimg.com/images/icons/socket-meta.gif'); }
+.wowhead-stats .socket-prismatic { background-image: url('https://wow.zamimg.com/images/icons/socket-prismatic.gif'); }
+.wowhead-stats .socket-cogwheel { background-image: url('https://wow.zamimg.com/images/icons/socket-cogwheel.gif'); }
+.wowhead-stats .socket-hydraulic { background-image: url('https://wow.zamimg.com/images/icons/socket-hydraulic.gif'); }
+/* Wowhead mutes its "extra" rows (drop source, drop chance, …). */
+.wowhead-stats .whtt-extra { color: #9d9d9d; }
 .model-stage { grid-area: model; position: relative; min-width: 0; min-height: calc(8 * var(--slot-size) + 7 * var(--slot-gap)); isolation: isolate; }
 .model-canvas { width: 100%; height: 100%; position: absolute; inset: 0; overflow: hidden; }
 .model-canvas[hidden] { display: none; }

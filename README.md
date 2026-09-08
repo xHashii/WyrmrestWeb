@@ -396,6 +396,11 @@ For fully local icons, put extracted `.png`, `.jpg` or `.webp` files at
 `images/items/<FileDataID>.<extension>`; local files always take priority.
 Set `'remote_item_icons' => false` to disable external icon requests.
 
+The sell-price coin glyphs and socket gem glyphs inside the Wowhead stat
+tooltips load from the same CDN as CSS background images; if it is
+unreachable the tooltip text stays fully readable, only the glyphs are
+missing.
+
 To refresh the filename map after replacing the client export, download a
 [community listfile](https://github.com/wowdev/wow-listfile) and run:
 
@@ -527,8 +532,10 @@ php tests/equipment.php
 `tests/wowhead-tooltip.php` exercises the Wowhead tooltip pipeline with fixture
 payloads only (no network): locale mapping, strict JSON-only parsing (a whole
 HTML item page must parse to "no tooltip", never render inside a gear slot),
-the sanitizer and link absolutising, the tooltip shape guard, and the cache
-format versioning that retires stale/bad entries without waiting for the TTL:
+the sanitizer (quality colours, the money/socket class tokens behind the coin
+and gem icons, "Phase N" removal, link absolutising — on both the DOM and the
+no-libxml fallback path), the tooltip shape guard, and the cache format
+versioning that retires stale/bad entries without waiting for the TTL:
 
 ```sh
 php tests/wowhead-tooltip.php

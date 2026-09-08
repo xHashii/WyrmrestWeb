@@ -43,8 +43,13 @@ function wowheadTooltipNetherLocale(string $locale): int
  * fetched again instead of lingering for the whole TTL. This is what retires
  * bad cached tooltips — for example a whole Wowhead page saved by an earlier
  * bug — without waiting for the cache to expire.
+ *
+ * v3: the sanitizer now keeps Wowhead's money- and socket- class tokens (so
+ * the sell-price coins and socket gems render) and drops the "Phase N"
+ * title-row marker; older entries were sanitised without either and are
+ * refetched.
  */
-const WOWHEAD_CACHE_FMT = 2;
+const WOWHEAD_CACHE_FMT = 3;
 
 /** Cache lives under cache/wowhead/ so it piggy-backs on the writable cache dir. */
 function wowheadItemCacheDir(array $config): string
@@ -311,12 +316,14 @@ function looksLikeWowheadTooltipHtml(string $html): bool
  * Wowhead renders its tooltip as <table> blocks whose colour comes from
  * `class="q"` / `class="q0"` … `class="q7"` (the standard WoW quality
  * colours we also use for the slot borders). We keep that structure and
- * those classes, drop every event handler / inline style / script / iframe,
- * and only keep <a> links that point back to wowhead.com — absolutising the
- * tooltip's relative /wotlk/… paths. The internal <!--stat7-->-style
- * markers Wowhead embeds in the markup are plain HTML comments and are
- * removed with everything else, so the rendered block matches Wowhead
- * visually without letting any of its markup execute in our page.
+ * those classes — plus the money and socket tokens Wowhead hangs its coin
+ * and gem icons on, and the muted "extra" rows — drop every event handler /
+ * inline style / script / iframe, and only keep <a> links that point back
+ * to wowhead.com — absolutising the tooltip's relative /wotlk/… paths. The
+ * internal <!--stat7-->-style markers Wowhead embeds in the markup are plain
+ * HTML comments and are removed with everything else, and the title row's
+ * "Phase N" marker is stripped outright, so the rendered block matches
+ * Wowhead visually without letting any of its markup execute in our page.
  */
 function sanitizeWowheadTooltipHtml(string $html): string
 {
@@ -341,8 +348,46 @@ const WOWHEAD_ALLOWED_TAGS = [
     'div', 'small', 'i', 'em', 'a', 'font', 'p',
 ];
 
-/** Class tokens that carry Wowhead's own meaning and quality colours. */
-const WOWHEAD_KEEP_CLASS = '#^(?:q[0-7]|q|wowhead-tooltip|indent)$#';
+/**
+ * Class tokens that carry Wowhead's own meaning and quality colours: the
+ * q-classes, the money classes behind the sell-price coin icons, the socket
+ * classes behind the gem icons, and the "extra" info rows (drop source,
+ * drop chance) which Wowhead mutes. Everything else is dropped with the
+ * attribute.
+ */
+const WOWHEAD_KEEP_CLASS = '#^(?:q[0-7]?|wowhead-tooltip|indent|money(?:gold|silver|copper)|socket-[a-z]+|whtt-[a-z-]+)$#';
+
+/** Filter a class attribute down to the tokens worth keeping, in order. */
+function wowheadKeptClassTokens(string $value): array
+{
+    return array_values(array_filter(
+        array_map('trim', preg_split('/\s+/', $value)),
+        static function (string $token): bool {
+            return $token !== '' && preg_match(WOWHEAD_KEEP_CLASS, $token) === 1;
+        }
+    ));
+}
+
+/**
+ * Wowhead opens the WotLK tooltip's title row with the content phase the
+ * item belongs to ("Phase 4"), in a cell of its own next to the item name.
+ * A private server's armory has no use for it — the whole realm runs one
+ * phase — so the marker is stripped while sanitising. The pattern covers
+ * every locale Wowhead serves tooltips in.
+ */
+const WOWHEAD_PHASE_LABEL = '/^(?:(?:Phase|Fase|Фаза|阶段)\s*\d+|\d+\s*단계)$/iu';
+
+function wowheadIsPhaseLabel(string $text): bool
+{
+    return preg_match(WOWHEAD_PHASE_LABEL, trim($text)) === 1;
+}
+
+/**
+ * Regex-path twin of the DOM phase removal: an element whose whole content is
+ * the phase label, e.g. `<b class="q0 whtt-extra">Phase 4</b>`. The caller
+ * also drops the `<th>`/`<td>` cell the removal leaves empty.
+ */
+const WOWHEAD_PHASE_STRIP_REGEX = '#<(b|strong|i|em|span|div|td|th)\b[^>]*>\s*(?:(?:Phase|Fase|Фаза|阶段)\s*\d+|\d+\s*단계)\s*</\1>#iu';
 
 /**
  * Normalise a tooltip link to an absolute https://www.wowhead.com URL.
@@ -398,9 +443,15 @@ function sanitizeWowheadTooltipDom(string $html): string
 function sanitizeWowheadNode(DOMNode $node): ?DOMNode
 {
     if ($node->nodeType === XML_TEXT_NODE) {
-        return $node->cloneNode(true);
+        return wowheadIsPhaseLabel($node->nodeValue ?? '') ? null : $node->cloneNode(true);
     }
     if ($node->nodeType !== XML_ELEMENT_NODE) {
+        return null;
+    }
+    // Wowhead's "Phase N" title-row marker — and the cell whose only content
+    // is that marker — is dropped instead of copied: a private-server armory
+    // has no phase list to compare the item against, so the label is noise.
+    if (wowheadIsPhaseLabel($node->textContent)) {
         return null;
     }
 
@@ -424,12 +475,7 @@ function sanitizeWowheadNode(DOMNode $node): ?DOMNode
             $name = strtolower($attr->nodeName);
             $value = $attr->nodeValue;
             if ($name === 'class') {
-                $tokens = array_filter(
-                    array_map('trim', preg_split('/\s+/', $value)),
-                    static function (string $t): bool {
-                        return preg_match(WOWHEAD_KEEP_CLASS, $t) === 1;
-                    }
-                );
+                $tokens = wowheadKeptClassTokens($value);
                 if ($tokens) {
                     $clone->setAttribute('class', implode(' ', $tokens));
                 }
@@ -467,9 +513,10 @@ function domInnerHtml(DOMNode $node): string
 
 /**
  * Regex fallback used only when DOMDocument is unavailable or threw. It keeps
- * the allowed tags, preserves only `class="qN"`/`class="q"` and wowhead.com
- * <a> hrefs, and strips every other attribute — safe, if a little less
- * faithful to the structure.
+ * the allowed tags, preserves the whitelisted class tokens (quality colours,
+ * money/socket icons, muted extra rows) and wowhead.com <a> hrefs, strips
+ * every other attribute and removes the "Phase N" marker — safe, if a little
+ * less faithful to the structure.
  */
 function sanitizeWowheadTooltipRegex(string $html): string
 {
@@ -483,17 +530,26 @@ function sanitizeWowheadTooltipRegex(string $html): string
                 return '';
             }
             $attr = '';
-            if (preg_match('/\bclass=["\'](q[0-7]|q|wowhead-tooltip|indent)["\']/i', $m[2], $cm)) {
-                $attr = ' class="' . strtolower($cm[1]) . '"';
-            } elseif ($tag === 'a' && preg_match('/href=["\']([^"\']+)["\']/i', $m[2], $hu)) {
+            if (preg_match('/\bclass=["\']([^"\']*)["\']/i', $m[2], $cm)) {
+                $tokens = wowheadKeptClassTokens($cm[1]);
+                if ($tokens) {
+                    $attr .= ' class="' . implode(' ', $tokens) . '"';
+                }
+            }
+            if ($tag === 'a' && preg_match('/\bhref=["\']([^"\']+)["\']/i', $m[2], $hu)) {
                 $href = wowheadAbsoluteHref($hu[1]);
                 if ($href !== '') {
-                    $attr = ' href="' . $href . '" target="_blank" rel="noopener noreferrer"';
+                    $attr .= ' href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8')
+                        . '" target="_blank" rel="noopener noreferrer"';
                 }
             }
             return '<' . $tag . $attr . '>';
         },
         $html
     );
+    // Same "Phase N" removal the DOM path performs, expressed on the flat
+    // markup: drop the labelled element, then the cell it leaves empty.
+    $html = (string) preg_replace(WOWHEAD_PHASE_STRIP_REGEX, '', $html);
+    $html = (string) preg_replace('#<(th|td)\b[^>]*>\s*</\1>#i', '', $html);
     return trim($html);
 }
