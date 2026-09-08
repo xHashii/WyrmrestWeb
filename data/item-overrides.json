@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "comment": "Server-specific item corrections for the Armory. Entries here win over the bundled db2/ItemSparse.*.csv export, the realm's hotfixes data and the resolver's learned observations, and are also fed into the appearance resolver, so a saved look resolves to the item this realm actually uses when several items share one model. The resolver already recovers items the export omits, ranks NPC-visual placeholders last and prefers items observed equipped on the realm; use this file only for pairs that remain indistinguishable (same model, slot and class). Values come from the realm's own client/game data and public WotLK/Classic item databases. Run php tools/audit-item-appearances.php to list every ambiguous look and find candidates. Fields: name, quality, item_level, required_level, inventory_type, subclass, display_id, icon_file_data_id, allowable_class (class bitmask, 0 = any), comment.",
+  "items": {
+    "51625": {
+      "name": "Sanctified Lightsworn Chestguard",
+      "quality": 4,
+      "item_level": 277,
+      "required_level": 80,
+      "inventory_type": 5,
+      "subclass": 4,
+      "display_id": 63921,
+      "icon_file_data_id": 340853,
+      "allowable_class": 2,
+      "comment": "Heroic 25-man ICC paladin tier chest on this realm. Missing from the bundled 3.4.3.54261 ItemSparse/Item export (that build omits the 51587-51681 range) although ItemModifiedAppearance references it, so it used to fall back to the shared-look Rot-Resistant Breastplate (50680). Shares the inv_chest_plate22 appearance (display 63921) with 50680/51265/51274/51275 \u2014 the exact same model shown by Wowhead for the heroic Sanctified Lightsworn chest."
+    },
+    "54577": {
+      "name": "Returning Footfalls",
+      "quality": 4,
+      "item_level": 284,
+      "required_level": 80,
+      "inventory_type": 8,
+      "subclass": 3,
+      "display_id": 64822,
+      "icon_file_data_id": 336774,
+      "allowable_class": 32767,
+      "comment": "Phase-5 Ruby Sanctum (Halion 25) boots on this realm. Already present in the bundled export, but it shares display 64822/inv_boots_mail_06 with Treads of the Wasteland (50071), Wyrmwing Treads (51818), Taldron's Long Neglected Boots (51891) and the earlier Returning Footfalls (53127). Pin the appearance and rank this realm's version first so saved looks resolve to it rather than the canonical same-model item."
+    }
+  }
+}

@@ -8,7 +8,7 @@ $character = ($guid > 0 || $name !== '') ? findCharacter($config, $guid ?: null,
 
 // Read saved inventory plus the optional character-select appearance cache.
 // Only a visible profile reaches this lookup; hidden GM characters stay hidden.
-$inventory = $character ? getCharacterInventory($config, (int) $character['guid']) : null;
+$inventory = $character ? getCharacterInventory($config, (int) $character['guid'], (int) $character['class']) : null;
 $equipment = $inventory['equipped'] ?? [];
 $professionItems = $inventory['profession'] ?? [];
 $bags = $inventory['bags'] ?? [];

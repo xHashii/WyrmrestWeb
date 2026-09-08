@@ -319,13 +319,51 @@ So item entries are resolved in this order:
    `VerifiedBuild` per id).
 2. `world`.`item_template` — only exists on 3.3.5-era cores; skipped
    automatically when it isn't there.
-3. `db2/ItemSparse.*.csv` — the bundled 3.4.3 client export, 45k items.
+3. `data/item-overrides.json` — curated, server-specific corrections
+   (see below). They beat the generic export, which can be an older build
+   or omit custom/phase items.
+4. `db2/ItemSparse.*.csv` — the bundled 3.4.3 client export, 45k items.
    On first use it is compiled into a small sorted binary index in
    `cache/` (about 1.7 MB) so lookups are a binary search; if `cache/`
    isn't writable the CSV is scanned instead — slower, but still correct.
 
 To swap in a newer client export, drop the new
 `ItemSparse.<build>.csv` into `db2/`; the index rebuilds itself.
+
+**How a saved look becomes an item** — the equipmentCache only stores a
+display ID plus the item's subclass and inventory type, and many items share
+one model (the bundled export has ~13k looks, 5.5k of them shared). The
+resolver layers the signals it has, strongest first:
+
+1. a saved *secondary appearance* (`ItemModifiedAppearance` id) — exact;
+2. subclass + inventory type + the character's class;
+3. curated realm overrides (`data/item-overrides.json`) — explicitly pinned;
+4. items someone is actually equipped with on the realm (learned from
+   readable inventory, refreshed every few minutes) — shared looks
+   auto-correct to what this realm really wears, without manual entries;
+5. ordinary items, with NPC-visual placeholders ("Monster - ...", "Test ...")
+   ranked last;
+6. items the exports omit entirely are still recovered from the appearance
+   graph, so they participate (display/icon) instead of vanishing.
+
+**Curated item overrides** (`data/item-overrides.json`) exist because the
+bundled export is a stock client snapshot: a realm can carry items it
+omits (for example the heroic-25 ICC block around entry 51625, which the
+3.4.3.54261 export leaves out even though `ItemModifiedAppearance`
+references it) or phase items that share a model with older ones. An
+override entry supplies the name, quality, item level, inventory type,
+subclass, display ID, icon FileDataID and allowable class, and makes the
+appearance resolver prefer that item for its look. Add or edit entries as
+needed; `config['item_overrides_path']` can point at a different file.
+When the realm's own `hotfixes.db2`-mirror tables (`item_modified_appearance`,
+`item_appearance`, `item_modified_appearance_extra`, `item`, `item_sparse`)
+are readable via `config['hotfixes_db_name']`, they are used ahead of the
+bundled export — that is how custom items are described by the server itself.
+
+To find every look that still has to be guessed (and the items the export
+cannot name at all), run:
+
+    php tools/audit-item-appearances.php --limit=20
 
 ### Equipped items versus cached appearances
 
@@ -359,11 +397,16 @@ formats instead of mistaking display IDs, enchantments or bag entries for item
 templates.
 
 A cache-only slot is resolved back to its item through the bundled DB2 export,
-so it shows the real name, rarity, item level and Wowhead link — and it
-contributes to the average item level like any other piece of gear. When
-several items share one look (a common transmog appearance), the canonical
-match is shown. If nothing in the export shares the look, the slot still shows
-its saved icon rather than disappearing. Valid inventory records always win.
+the realm's hotfixes data and the curated overrides, so it shows the real name,
+rarity, item level and Wowhead link — and it contributes to the average item
+level like any other piece of gear. When several items share one look (a
+common transmog appearance), the resolver first uses a saved *secondary
+appearance* (an `ItemModifiedAppearance` id, which identifies the visible item
+exactly), then the subclass + inventory type, then the character's class
+(items the class cannot wear are rejected), then the curated overrides, then
+items observed equipped on this realm. The canonical match is shown only if
+still tied. If nothing shares the look, the slot still shows its saved icon
+rather than disappearing. Valid inventory records always win.
 Cached entries do not fill empty slots in an otherwise readable loadout; that
 would resurrect stale unequipped items. They can fill an occupied slot with a
 broken instance link, or an entirely unavailable equipped loadout.

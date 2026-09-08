@@ -35,7 +35,13 @@ $caches = [
     3 => savedAppearanceCache([0 => [1, $head, 0, 4, 0], 15 => [17, $staff, 0, 10, 0]]),
     4 => savedAppearanceCache([0 => [1, $head, 0, 4, 0], 2 => [3, 777, 0, 4, 0]]),
     6 => 'malformed equipment data',
+    // Shared-look endgame gear: the realm's curated item must win over the
+    // generic same-model item, filtered by the character's class.
+    21 => savedAppearanceCache([4 => [5, 63921, 0, 4, 0]]),
+    22 => savedAppearanceCache([7 => [8, 64822, 0, 3, 0]]),
 ];
+$pdo->exec("INSERT INTO characters (guid, account, name, class, level, online, deleteDate) VALUES
+    (21, 100, 'Cachepal', 2, 80, 0, NULL), (22, 100, 'Cachesham', 7, 80, 0, NULL)");
 $updateCache = $pdo->prepare('UPDATE characters SET equipmentCache = ? WHERE guid = ?');
 foreach ($caches as $guid => $cache) {
     $updateCache->execute([$cache, $guid]);
@@ -75,6 +81,13 @@ checkSame('equipment-cache', $cacheOnly['equipped'][15]['equipment_source'], 'Ca
 checkSame(2, $cacheOnly['integrity']['cache_fallback'], 'Diagnostics count fallback slots');
 checkSame(2, $cacheOnly['equipped'][0]['quality'], 'A cache-only slot recovers the real item quality');
 checkSame(26, averageItemLevel($cacheOnly['equipped']), 'Cache-resolved items contribute their real item level to the average');
+
+$paladinCache = getCharacterInventory($config, 21, 2);
+checkSame(51625, $paladinCache['equipped'][4]['entry'], 'A cache-only paladin chest resolves to the curated heroic tier item, not the shared-model drop');
+checkSame('Sanctified Lightsworn Chestguard', $paladinCache['equipped'][4]['name'], 'A cache-only paladin chest shows the realm item name');
+$shamanCache = getCharacterInventory($config, 22, 7);
+checkSame(54577, $shamanCache['equipped'][7]['entry'], 'A cache-only shaman feet slot resolves to the curated phase-5 item');
+checkSame(284, $shamanCache['equipped'][7]['item_level'], 'A cache-only shaman feet slot shows the real item level');
 
 $mixed = getCharacterInventory($config, 3);
 checkSame([15], array_keys($mixed['equipped']), 'Stale cache does not resurrect an unequipped head slot');
