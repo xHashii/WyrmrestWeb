@@ -117,7 +117,7 @@ require __DIR__ . '/includes/header.php';
           <div><dt>item_instance links</dt><dd><?= $saved['integrity']['missing_instance'] ?> missing/unreadable · <?= $saved['integrity']['owner_mismatch'] ?> owner mismatches</dd></div>
           <div><dt>equipmentCache</dt><dd><?= htmlspecialchars($saved['status']['cache']) ?> · <?= $saved['integrity']['cache_slots'] ?> saved appearances · <?= $saved['integrity']['cache_fallback'] ?> used as fallback</dd></div>
         </dl>
-        <p class="roster-empty" style="margin-top: 12px;">The cache stores appearance/display IDs plus each item's subclass and inventory type — not item IDs. Those are resolved back to the item through the bundled DB2 appearance graph, so gear can still be named and priced when the inventory tables are unreadable. When several items share one look, the canonical match is shown. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
+        <p class="roster-empty" style="margin-top: 12px;">The cache stores appearance/display IDs plus each item's subclass and inventory type — not item IDs. Those are resolved back to the item through the bundled DB2 appearance graph plus <code>data/item-overrides.json</code>, so gear can still be named and priced when the inventory tables are unreadable. When several items share one look, the resolver uses a saved secondary appearance, the subclass + inventory type, and the character's class first, then prefers the realm's curated item over the generic canonical one. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
       <?php endif; ?>
       <h2 style="margin-top: 24px;">Equipped items and appearances</h2>
       <?php if (!$trace['equipment']): ?>

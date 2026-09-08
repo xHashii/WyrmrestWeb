@@ -95,6 +95,7 @@ return [
     // lookup (slower, but still correct).
     // 'db2_dir'   => __DIR__ . '/db2',
     // 'cache_dir' => __DIR__ . '/cache',
+    // 'item_overrides_path' => __DIR__ . '/data/item-overrides.json',
 
     'realm_id'      => 1,       // matches your realm's ID in the auth db
     'hide_game_masters' => true, // hide GM characters/guild members from the Armory

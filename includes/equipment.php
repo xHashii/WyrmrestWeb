@@ -97,18 +97,22 @@ function unknownArmoryItem(int $entry): array
  * The cache only stores a look (display id) plus the equipped item's subclass
  * and inventory type — never the item id itself. We resolve that look back to
  * the item it belongs to and pull its real name/quality/item level from the
- * same DB2 export the rest of the Armory uses. When several items share a look
- * and can't be told apart, the canonical one wins; when nothing matches, the
- * slot still shows its saved icon rather than vanishing.
+ * same DB2 export the rest of the Armory uses. A cached secondary appearance
+ * (ItemModifiedAppearance id) resolves the item exactly; otherwise the
+ * subclass + inventory type disambiguate, the character's class rejects items
+ * it cannot wear, and curated realm overrides are preferred over generic
+ * same-look items. When nothing matches, the slot still shows its saved icon
+ * rather than vanishing.
  */
-function cachedAppearanceItem(array $config, int $slot, array $appearance): array
+function cachedAppearanceItem(array $config, int $slot, array $appearance, ?int $characterClass = null): array
 {
     $tables = itemVisualTables($config);
     $displayId = (int) ($appearance['display_id'] ?? 0);
     $subclass = (int) ($appearance['subclass'] ?? -1);
     $inventoryType = (int) ($appearance['inventory_type'] ?? -1);
+    $secondaryAppearanceId = (int) ($appearance['secondary_appearance_id'] ?? 0);
 
-    $entry = resolveItemFromAppearance($config, $displayId, $subclass, $inventoryType);
+    $entry = resolveItemFromAppearance($config, $displayId, $subclass, $inventoryType, $characterClass, $secondaryAppearanceId);
     $iconFromDisplay = (int) ($tables['displays'][$displayId] ?? 0);
 
     $base = array_replace(unknownArmoryItem(0), $appearance, [
@@ -121,6 +125,7 @@ function cachedAppearanceItem(array $config, int $slot, array $appearance): arra
         'item_guid' => null,
         'count' => 1,
         'durability' => null,
+        'lookalike_count' => itemAppearanceCandidateCount($config, $displayId),
     ]);
 
     if ($entry > 0) {

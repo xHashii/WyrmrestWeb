@@ -91,6 +91,30 @@ equipmentCheck(0, $unmatched['entry'], 'An unknown appearance is not forced onto
 equipmentCheck('appearance-cache', $unmatched['source'], 'An unresolved appearance is still shown as a saved appearance');
 equipmentCheck(0, resolveItemFromAppearance($config, 0), 'A zero display ID resolves to no item');
 
+// Curated overrides name items the bundled client export omits (e.g. the
+// heroic-25 ICC block this realm carries) and feed the appearance tables.
+$overrideChest = resolveItems($config, [51625])[51625] ?? null;
+equipmentCheck('Sanctified Lightsworn Chestguard', $overrideChest['name'] ?? null, 'Overrides provide names for custom realm items missing from the DB2 export');
+equipmentCheck(4, $overrideChest['quality'] ?? null, 'Overrides carry the real item quality');
+equipmentCheck(277, $overrideChest['item_level'] ?? null, 'Overrides carry the real item level');
+equipmentCheck(63921, itemVisuals($config, [51625])[51625]['display_id'], 'Overridden items join the appearance tables');
+equipmentCheck(340853, itemVisuals($config, [51625])[51625]['icon_file_data_id'], 'Overridden items get the realm icon');
+
+// Shared looks resolve to this realm's item, not the generic same-model one.
+equipmentCheck(51625, resolveItemFromAppearance($config, 63921, 4, 5, 2), 'A paladin chest look resolves to the curated heroic tier item');
+equipmentCheck(50680, resolveItemFromAppearance($config, 63921, 4, 5, 1), 'A class that cannot wear the tier piece is not handed it');
+equipmentCheck(54577, resolveItemFromAppearance($config, 64822, 3, 8), 'A feet look resolves to the curated phase-5 item, not the canonical one');
+equipmentCheck(54577, resolveItemFromAppearance($config, 64822, 3, 8, 7, 179925), 'A saved secondary appearance (ItemModifiedAppearance id) resolves exactly');
+$heroicChest = cachedAppearanceItem($config, 4, ['inventory_type' => 5, 'display_id' => 63921, 'enchant_visual' => 0, 'subclass' => 4, 'secondary_appearance_id' => 0], 2);
+equipmentCheck(51625, $heroicChest['entry'], 'A cache-only chest slot shows the item actually equipped');
+equipmentCheck('Sanctified Lightsworn Chestguard', $heroicChest['name'], 'A cache-only chest slot shows the real item name');
+equipmentCheck(340853, $heroicChest['icon_file_data_id'], 'A cache-only chest slot keeps the right icon');
+equipmentCheck(5, $heroicChest['lookalike_count'], 'Shared-look slots record how many items share the model');
+$footfallsCache = cachedAppearanceItem($config, 7, ['inventory_type' => 8, 'display_id' => 64822, 'enchant_visual' => 0, 'subclass' => 3, 'secondary_appearance_id' => 0], 7);
+equipmentCheck(54577, $footfallsCache['entry'], 'A cache-only feet slot shows the item actually equipped');
+equipmentCheck('Returning Footfalls', $footfallsCache['name'], 'A cache-only feet slot shows the real item name');
+equipmentCheck(284, $footfallsCache['item_level'], 'A cache-only feet slot shows the real item level');
+
 // A tiny alternate export tests default-appearance selection and read-only cache fallback.
 $fixtureDir = $work . '/db2';
 mkdir($fixtureDir);

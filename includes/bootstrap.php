@@ -767,7 +767,7 @@ function getCharacterGuild(array $config, int $guid): ?array
  *   status     availability of the inventory query and optional appearance cache
  *   integrity  counters for armory-diagnostics.php
  */
-function getCharacterInventory(array $config, int $guid): array
+function getCharacterInventory(array $config, int $guid, ?int $characterClass = null): array
 {
     $inventory = [
         'equipped' => [], 'profession' => [], 'bags' => [], 'backpack' => [],
@@ -898,7 +898,7 @@ function getCharacterInventory(array $config, int $guid): array
     foreach ($cache['slots'] as $slot => $appearance) {
         $current = $inventory['equipped'][$slot] ?? null;
         if ($noEquipmentRows || ($current !== null && (int) $current['entry'] <= 0)) {
-            $fallback = cachedAppearanceItem($config, $slot, $appearance);
+            $fallback = cachedAppearanceItem($config, $slot, $appearance, $characterClass);
             if ($current !== null) {
                 $fallback['item_guid'] = $current['item_guid'];
             }
@@ -915,9 +915,9 @@ function getCharacterInventory(array $config, int $guid): array
 /**
  * The equipped gear only (slots 0-18), as slot => item row.
  */
-function getCharacterEquipment(array $config, int $guid): array
+function getCharacterEquipment(array $config, int $guid, ?int $characterClass = null): array
 {
-    return getCharacterInventory($config, $guid)['equipped'];
+    return getCharacterInventory($config, $guid, $characterClass)['equipped'];
 }
 
 /**
@@ -931,7 +931,10 @@ function getCharacterEquipment(array $config, int $guid): array
  *      edited items live. Highest VerifiedBuild per id.
  *   2. `world`.`item_template`  — only exists on 3.3.5-era cores; skipped
  *      automatically if the table isn't there.
- *   3. db2/ItemSparse.*.csv     — the bundled client export (see itemdb.php).
+ *   3. data/item-overrides.json  — curated realm corrections (see itemdb.php):
+ *      custom/phase items the client export omits, plus the identity that a
+ *      shared appearance belongs to on this realm.
+ *   4. db2/ItemSparse.*.csv     — the bundled client export (see itemdb.php).
  */
 function resolveItems(array $config, array $entries): array
 {
@@ -945,6 +948,13 @@ function resolveItems(array $config, array $entries): array
     $missing = array_values(array_diff($entries, array_keys($resolved)));
     if ($missing) {
         $resolved += resolveItemsFromWorldDb($config, $missing);
+    }
+
+    // Curated realm corrections (data/item-overrides.json) beat the generic
+    // client export: that export can be an older build or omit custom items.
+    $missing = array_values(array_diff($entries, array_keys($resolved)));
+    if ($missing) {
+        $resolved += resolveItemsFromOverrides($config, $missing);
     }
 
     $missing = array_values(array_diff($entries, array_keys($resolved)));
@@ -1282,7 +1292,23 @@ function armoryDiagnostics(array $config): array
             'Falls back to scanning the CSV on every lookup (slower). Make the cache directory writable to fix.');
     }
 
-    // 8. end-to-end: a character with gear
+    // 8. curated item overrides (realm-specific corrections)
+    $overridesPath = itemOverridesPath($config);
+    $overrides = itemOverrides($config);
+    if (!is_file($overridesPath)) {
+        $add($checks, 'item overrides', 'ok', 'no overrides file (using the bundled client export only)');
+    } elseif (!$overrides) {
+        $add($checks, 'item overrides', 'warn',
+            basename($overridesPath) . ' exists but has no usable entries',
+            'Expected a JSON object with an "items" map; see data/item-overrides.json for the format.');
+    } else {
+        $listed = implode(', ', array_slice(array_keys($overrides), 0, 8)) . (count($overrides) > 8 ? ', …' : '');
+        $add($checks, 'item overrides', 'ok',
+            basename($overridesPath) . ' — ' . count($overrides) . ' curated item(s): ' . $listed,
+            'These always beat the bundled db2/ItemSparse CSV and are preferred by the appearance resolver for their shared looks. Add entries for any custom/missing realm items.');
+    }
+
+    // 9. end-to-end: a character with gear
     try {
         $visible = armoryAliveFilter($config);
         $gmIds = !empty($config['hide_game_masters']) ? gmAccountIds($config) : [];
@@ -1291,23 +1317,23 @@ function armoryDiagnostics(array $config): array
         }
         try {
             $sample = $pdo->query("
-                SELECT c.guid, c.name, COUNT(ci.item) AS items
+                SELECT c.guid, c.name, c.class, COUNT(ci.item) AS items
                 FROM characters c
                 LEFT JOIN character_inventory ci ON ci.guid = c.guid AND ci.bag = 0 AND ci.slot BETWEEN 0 AND 18
                 WHERE 1 = 1 {$visible}
-                GROUP BY c.guid, c.name
+                GROUP BY c.guid, c.name, c.class
                 ORDER BY items DESC, c.guid ASC
                 LIMIT 1
             ")->fetch(PDO::FETCH_ASSOC);
         } catch (\Throwable $e) {
-            $sample = $pdo->query("SELECT c.guid, c.name FROM characters c WHERE 1 = 1 {$visible} ORDER BY c.guid ASC LIMIT 1")
+            $sample = $pdo->query("SELECT c.guid, c.name, c.class FROM characters c WHERE 1 = 1 {$visible} ORDER BY c.guid ASC LIMIT 1")
                 ->fetch(PDO::FETCH_ASSOC);
         }
 
         if (!$sample) {
             $add($checks, 'equipment lookup', 'warn', 'no public character is available to inspect');
         } else {
-            $inventory = getCharacterInventory($config, (int) $sample['guid']);
+            $inventory = getCharacterInventory($config, (int) $sample['guid'], isset($sample['class']) ? (int) $sample['class'] : null);
             $equipment = $inventory['equipped'];
             $integrity = $inventory['integrity'];
 
@@ -1441,7 +1467,7 @@ function armoryTraceName(array $config, string $name): array
         ];
 
         if (!$hidden && $trace['inventory'] === null) {
-            $inventory = getCharacterInventory($config, (int) $row['guid']);
+            $inventory = getCharacterInventory($config, (int) $row['guid'], (int) $row['class']);
             $trace['inventory'] = ['status' => $inventory['status'], 'integrity' => $inventory['integrity']];
             foreach ($inventory['equipped'] as $slot => $item) {
                 $trace['equipment'][] = [

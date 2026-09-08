@@ -66,6 +66,108 @@ function itemSparseCsvPath(array $config): ?string
 }
 
 /**
+ * Path of the curated item-overrides file (data/item-overrides.json).
+ * Operators can point config['item_overrides_path'] at a different file.
+ */
+function itemOverridesPath(array $config): string
+{
+    return $config['item_overrides_path'] ?? (__DIR__ . '/../data/item-overrides.json');
+}
+
+/**
+ * Curated, server-specific item corrections (see data/item-overrides.json).
+ *
+ * The bundled db2/ CSVs are a generic client export; a realm can carry custom,
+ * re-itemized or phase-specific items the export omits — for example the
+ * heroic-25 ICC block around entry 51625, which ItemSparse.3.4.3.54261.csv
+ * leaves out even though ItemModifiedAppearance references it. Entries here
+ * fill those gaps, correct wrong rows, and tell the appearance resolver which
+ * item a shared look belongs to on this realm. Returns entry => normalized row.
+ */
+function itemOverrides(array $config): array
+{
+    static $memo = null;
+    if ($memo !== null) {
+        return $memo;
+    }
+
+    $path = itemOverridesPath($config);
+    if (!is_file($path)) {
+        return $memo = [];
+    }
+
+    $decoded = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($decoded) || !is_array($decoded['items'] ?? null)) {
+        return $memo = [];
+    }
+
+    $found = [];
+    foreach ($decoded['items'] as $key => $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $entry = (int) ($row['entry'] ?? $key);
+        $name = trim((string) ($row['name'] ?? ''));
+        if ($entry <= 0 || $name === '') {
+            continue;
+        }
+        $found[$entry] = [
+            'entry'            => $entry,
+            'name'             => $name,
+            'quality'          => (int) ($row['quality'] ?? -1),
+            'inventory_type'   => (int) ($row['inventory_type'] ?? 0),
+            'item_level'       => (int) ($row['item_level'] ?? 0),
+            'required_level'   => (int) ($row['required_level'] ?? 0),
+            'subclass'         => (int) ($row['subclass'] ?? 0),
+            'display_id'       => (int) ($row['display_id'] ?? 0),
+            'icon_file_data_id'=> (int) ($row['icon_file_data_id'] ?? 0),
+            'allowable_class'  => (int) ($row['allowable_class'] ?? 0),
+            'source'           => 'overrides',
+        ];
+    }
+    ksort($found, SORT_NUMERIC);
+
+    return $memo = $found;
+}
+
+/**
+ * Resolve item entries from the curated overrides file. These are corrected
+ * or realm-specific items, so they win over the generic client export while
+ * still losing to the live hotfixes/world databases.
+ */
+function resolveItemsFromOverrides(array $config, array $entries): array
+{
+    $entries = array_values(array_unique(array_map('intval', $entries)));
+    if (!$entries) {
+        return [];
+    }
+
+    $overrides = itemOverrides($config);
+    if (!$overrides) {
+        return [];
+    }
+
+    $wanted = array_flip($entries);
+    $found = [];
+    foreach ($overrides as $entry => $row) {
+        if (!isset($wanted[$entry])) {
+            continue;
+        }
+        $found[$entry] = [
+            'entry'          => $entry,
+            'name'           => $row['name'],
+            'quality'        => $row['quality'],
+            'inventory_type' => $row['inventory_type'],
+            'item_level'     => $row['item_level'],
+            'required_level' => $row['required_level'],
+            'source'         => 'overrides',
+        ];
+    }
+
+    return $found;
+}
+
+/**
  * Column indexes we need out of the ItemSparse CSV header, or null if the
  * header doesn't look like an ItemSparse export.
  */
