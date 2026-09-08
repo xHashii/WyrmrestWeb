@@ -35,9 +35,7 @@
 .item-art { position: absolute; inset: 2px; width: calc(100% - 4px); height: calc(100% - 4px); object-fit: cover; border-radius: 2px; }
 .item-art[hidden] { display: none; }
 .is-occupied .slot-placeholder { color: #868b96; }
-.is-cached .gear-icon { border-style: dashed; }
-.cached-item-mark, .unknown-item-mark { position: absolute; display: grid; place-items: center; right: 1px; bottom: 1px; min-width: 14px; height: 14px; font: 700 9px/1 sans-serif; border-radius: 2px; background: #171719e8; color: #dabd7e; }
-.unknown-item-mark { font-size: 12px; color: #ddd; }
+.unknown-item-mark { position: absolute; display: grid; place-items: center; right: 1px; bottom: 1px; min-width: 14px; height: 14px; font: 700 12px/1 sans-serif; border-radius: 2px; background: #171719e8; color: #ddd; }
 .gear-tooltip { display: none; position: absolute; left: calc(100% + 12px); top: 0; z-index: 50; width: 260px; max-width: calc(100vw - 24px); padding: 14px 16px; border: 1px solid var(--item-quality); border-radius: 5px; background: #111216f5; box-shadow: 0 10px 30px #0009; color: #e9e9ed; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .gear-slot[open] { z-index: 20; }
 .gear-slot[open] .gear-tooltip { display: block; }
@@ -47,10 +45,8 @@
 .paperdoll.js-tooltips .gear-tooltip.is-positioned { visibility: visible; }
 .gear-slot-label { display: block; color: #999eaa; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 3px; }
 .gear-item-name { display: block; color: var(--item-quality); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.is-empty .gear-item-name, .is-cached .gear-item-name { color: #dedee5; }
+.is-empty .gear-item-name { color: #dedee5; }
 .gear-meta { display: block; color: #b5b7c2; margin: 3px 0; }
-.gear-cache-note { color: #d8bd87; margin: 8px 0; }
-.gear-provenance { display: block; margin-top: 12px; padding-top: 9px; border-top: 1px solid #ffffff16; color: #818794; font-size: 8px; letter-spacing: .06em; }
 .gear-external-link { display: inline-block; margin-top: 9px; color: #a9c9fc; font-size: 11px; text-underline-offset: 3px; }
 .model-stage { grid-area: model; position: relative; min-width: 0; min-height: calc(8 * var(--slot-size) + 7 * var(--slot-gap)); isolation: isolate; }
 .model-canvas { width: 100%; height: 100%; position: absolute; inset: 0; overflow: hidden; }

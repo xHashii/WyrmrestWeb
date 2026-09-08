@@ -343,15 +343,25 @@ core, `Player::SaveToDB` writes **34 slots × 5 unsigned integers**:
 inventoryType displayId enchantVisual subclass secondaryModifiedAppearanceId
 ```
 
-These are **appearance/display IDs, not item IDs**. Only the first 19 slots
-are equipment. The parser rejects malformed/unsupported formats instead of
-mistaking display IDs, enchantments or bag entries for item templates.
+These are **appearance/display IDs, not item IDs** — but the display ID,
+subclass and inventory type together are enough to walk the client's
+appearance graph back to the item, exactly the way Wowhead's WotLK database
+does:
 
-A cache-only slot can recover an icon through `ItemAppearance`, but not an
-exact item name, rarity or stats: multiple items share an appearance, and the
-cache may include a transmog. Such slots have a **dashed border and C badge**,
-an explicit saved-appearance label, and do not contribute to average item
-level or link to a guessed Wowhead item. Valid inventory records always win.
+```
+displayId --ItemAppearance--> appearanceId --ItemModifiedAppearance--> itemId
+```
+
+Only the first 19 slots are equipment. The parser rejects malformed/unsupported
+formats instead of mistaking display IDs, enchantments or bag entries for item
+templates.
+
+A cache-only slot is resolved back to its item through the bundled DB2 export,
+so it shows the real name, rarity, item level and Wowhead link — and it
+contributes to the average item level like any other piece of gear. When
+several items share one look (a common transmog appearance), the canonical
+match is shown. If nothing in the export shares the look, the slot still shows
+its saved icon rather than disappearing. Valid inventory records always win.
 Cached entries do not fill empty slots in an otherwise readable loadout; that
 would resurrect stale unequipped items. They can fill an occupied slot with a
 broken instance link, or an entirely unavailable equipped loadout.

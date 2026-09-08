@@ -1,9 +1,13 @@
 <?php
 /**
- * Player::SaveToDB in xHashii/3.4.3_Source writes 34 equipment/bag slots,
+ * Player::SaveToDB in xHashii/WyrmrestCore writes 34 equipment/bag slots,
  * FIVE integers per slot: inventory type, DISPLAY id, enchant visual,
- * subclass, secondary modified appearance. These are NOT item template IDs.
- * Parse only the 19 equipped slots. Never guess an item from its appearance.
+ * subclass, secondary modified appearance. These are NOT item template IDs —
+ * but the display id, subclass and inventory type together are enough to walk
+ * the client's appearance graph back to the item (see resolveItemFromAppearance
+ * in item-visuals.php), which is what lets a character whose inventory tables
+ * are unreadable still show real, named equipment.
+ * Parse only the 19 equipped slots.
  */
 function parseEquipmentCache(string $cache): array
 {
@@ -87,20 +91,64 @@ function unknownArmoryItem(int $entry): array
     ];
 }
 
+/**
+ * Turn one parsed equipmentCache slot into a displayable item.
+ *
+ * The cache only stores a look (display id) plus the equipped item's subclass
+ * and inventory type — never the item id itself. We resolve that look back to
+ * the item it belongs to and pull its real name/quality/item level from the
+ * same DB2 export the rest of the Armory uses. When several items share a look
+ * and can't be told apart, the canonical one wins; when nothing matches, the
+ * slot still shows its saved icon rather than vanishing.
+ */
 function cachedAppearanceItem(array $config, int $slot, array $appearance): array
 {
     $tables = itemVisualTables($config);
-    return array_replace(unknownArmoryItem(0), $appearance, [
+    $displayId = (int) ($appearance['display_id'] ?? 0);
+    $subclass = (int) ($appearance['subclass'] ?? -1);
+    $inventoryType = (int) ($appearance['inventory_type'] ?? -1);
+
+    $entry = resolveItemFromAppearance($config, $displayId, $subclass, $inventoryType);
+    $iconFromDisplay = (int) ($tables['displays'][$displayId] ?? 0);
+
+    $base = array_replace(unknownArmoryItem(0), $appearance, [
         'name' => equipSlotLabel($slot) . ' (saved appearance)',
         'source' => 'appearance-cache',
         'equipment_source' => 'equipment-cache',
-        'icon_file_data_id' => (int) ($tables['displays'][$appearance['display_id']] ?? 0),
+        'icon_file_data_id' => $iconFromDisplay,
         'slot' => $slot,
         'bag' => 0,
         'item_guid' => null,
         'count' => 1,
         'durability' => null,
     ]);
+
+    if ($entry > 0) {
+        $resolved = resolveItems($config, [$entry])[$entry] ?? null;
+        if ($resolved !== null) {
+            $visual = itemVisuals($config, [$entry])[$entry] ?? [];
+            $base = array_replace($base, $resolved, [
+                // Keep the character's actual saved appearance/enchant fields.
+                'entry' => $entry,
+                'display_id' => $displayId ?: (int) ($visual['display_id'] ?? 0),
+                'icon_file_data_id' => (int) ($visual['icon_file_data_id'] ?? 0) ?: $iconFromDisplay,
+                'source' => 'appearance-resolved',
+                'equipment_source' => 'equipment-cache',
+                'enchant_visual' => $appearance['enchant_visual'] ?? 0,
+                'secondary_appearance_id' => $appearance['secondary_appearance_id'] ?? 0,
+                'slot' => $slot,
+                'bag' => 0,
+                'item_guid' => null,
+                'count' => 1,
+                'durability' => null,
+            ]);
+            if (empty($base['inventory_type'])) {
+                $base['inventory_type'] = $inventoryType > 0 ? $inventoryType : (int) ($visual['inventory_type'] ?? 0);
+            }
+        }
+    }
+
+    return $base;
 }
 
 /** Paper-doll positions, matching the in-game character screen. */
