@@ -1292,7 +1292,34 @@ function armoryDiagnostics(array $config): array
             'Falls back to scanning the CSV on every lookup (slower). Make the cache directory writable to fix.');
     }
 
-    // 8. curated item overrides (realm-specific corrections)
+    // 8. realm appearance data (the hotfixes DB2 layers this server ships)
+    $realmLayer = realmAppearanceLayer($config);
+    if (empty($config['hotfixes_db_name'])) {
+        $add($checks, 'realm appearance data', 'ok', 'not configured — using the bundled export plus curated overrides',
+            'Set \'hotfixes_db_name\' in config.php to let the appearance resolver read the DB2 rows this server actually sends to clients (custom/phase items).');
+    } elseif (!$realmLayer['available']) {
+        $add($checks, 'realm appearance data', 'warn', 'the hotfixes item_appearance tables are not readable',
+            'Falling back to the bundled export plus curated overrides. Check the hotfixes database name/permissions.');
+    } elseif (!$realmLayer['resolve'] && !$realmLayer['items']) {
+        $add($checks, 'realm appearance data', 'warn', 'configured, but the hotfixes appearance tables are empty',
+            'A stock server ships no DB2 hotfixes; the bundled export is used. On a realm with custom/phase items these tables should carry them.');
+    } else {
+        $add($checks, 'realm appearance data', 'ok',
+            count($realmLayer['items']) . ' item(s) and ' . count($realmLayer['resolve']) . ' look(s) from the hotfixes table',
+            'This realm\'s own appearance graph is used ahead of the bundled export, so custom/missing items like 51625 resolve from server data.');
+    }
+
+    // 9. learned realm observations (what is actually equipped somewhere)
+    $observed = realmEquippedItems($config);
+    if (!$observed) {
+        $add($checks, 'realm-equipped observations', 'ok', 'not available (unreadable inventory) — shared looks rank by curated data only');
+    } else {
+        $add($checks, 'realm-equipped observations', 'ok',
+            number_format(count($observed)) . ' item entries observed equipped on this realm',
+            'When several items share a look, the one actually worn somewhere on the realm is preferred — shared looks auto-correct without manual entries.');
+    }
+
+    // 10. curated item overrides (realm-specific corrections)
     $overridesPath = itemOverridesPath($config);
     $overrides = itemOverrides($config);
     if (!is_file($overridesPath)) {
@@ -1308,7 +1335,7 @@ function armoryDiagnostics(array $config): array
             'These always beat the bundled db2/ItemSparse CSV and are preferred by the appearance resolver for their shared looks. Add entries for any custom/missing realm items.');
     }
 
-    // 9. end-to-end: a character with gear
+    // 11. end-to-end: a character with gear
     try {
         $visible = armoryAliveFilter($config);
         $gmIds = !empty($config['hide_game_masters']) ? gmAccountIds($config) : [];

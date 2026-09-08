@@ -127,6 +127,31 @@ $fixtureVisual = itemVisuals($alternate, [7])[7];
 equipmentCheck(801, $fixtureVisual['display_id'], 'Default appearance beats a variant, then lowest order wins');
 equipmentCheck(132759, $fixtureVisual['icon_file_data_id'], 'Appearance fallback icon follows the chosen appearance');
 
+// Items the export omits entirely must still be recovered from the appearance
+// graph (like the realm's 51625: no Item/ItemSparse row, but IMA references it).
+$recoveryDir = $work . '/recovery-db2';
+mkdir($recoveryDir);
+// Item.csv: item 70 is a "Monster -" placeholder chest (lower id, so id-order
+// alone would pick it), 71 is the real chest, 72 is absent from the export
+// entirely though IMA still references it.
+file_put_contents($recoveryDir . '/Item.test.csv', "ID,ClassID,SubclassID,Material,InventoryType,RequiredLevel,IconFileDataID\n70,2,4,6,5,80,100\n71,2,4,6,5,80,101\n");
+file_put_contents($recoveryDir . '/ItemAppearance.test.csv', "ID,DisplayType,ItemDisplayInfoID,DefaultIconFileDataID,UiOrder\n10,3,900,111,0\n");
+file_put_contents($recoveryDir . '/ItemModifiedAppearance.test.csv', "ID,ItemID,ItemAppearanceModifierID,ItemAppearanceID,OrderIndex,TransmogSourceTypeEnum\n500,70,0,10,0,0\n501,71,0,10,0,0\n502,72,0,10,0,0\n");
+file_put_contents($recoveryDir . '/ItemSparse.test.csv', "ID,AllowableClass,ItemLevel,Display_lang,OverallQualityID\n70,2,277,Monster - Chest,0\n71,2,277,Realm Chestplate,4\n");
+$recovery = array_replace($config, ['db2_dir' => $recoveryDir, 'cache_dir' => $work . '/recovery-cache']);
+$recovered = itemVisuals($recovery, [72])[72];
+equipmentCheck(900, $recovered['display_id'], 'Items missing from the export still get their display from the appearance graph');
+equipmentCheck(111, $recovered['icon_file_data_id'], 'Missing items still get their icon from the appearance graph');
+equipmentCheck(51625, resolveItemFromAppearance($recovery, 63921, 4, 5, 2), 'The realm override keeps working with export-missing items');
+// Placeholder candidates rank below real items with the same look/slot, even
+// when the placeholder has the smaller item id.
+equipmentCheck(71, resolveItemFromAppearance($recovery, 900, 4, 5, 2), 'A real item beats a "Monster -" placeholder sharing the same look');
+equipmentCheck(71, resolveItemFromAppearance($recovery, 900, 4, 5, 2, 501), 'A saved secondary appearance resolves the real item exactly when recorded');
+// When nothing known matches the saved slot, the untyped recoverable item is
+// a better guess than a known item of the wrong kind (legs vs chest etc.).
+equipmentCheck(72, resolveItemFromAppearance($recovery, 900, 0, 7, 2), 'An export-missing item is recovered when no known item fits the slot');
+equipmentCheck(0, resolveItemFromAppearance($recovery, 99999999, 4, 5, 2), 'Unknown looks still resolve to nothing');
+
 foreach (['meta/character/7.json', 'meta/armor/1/12345.json', 'models/character/7.mo3', 'mo3/character/human/male/humanmale.mo3', 'textures/135274.webp'] as $path) {
     equipmentCheck(true, validModelAssetPath($path), 'Expected model asset paths are allowed');
 }

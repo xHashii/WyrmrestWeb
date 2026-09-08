@@ -113,7 +113,8 @@ function cachedAppearanceItem(array $config, int $slot, array $appearance, ?int 
     $secondaryAppearanceId = (int) ($appearance['secondary_appearance_id'] ?? 0);
 
     $entry = resolveItemFromAppearance($config, $displayId, $subclass, $inventoryType, $characterClass, $secondaryAppearanceId);
-    $iconFromDisplay = (int) ($tables['displays'][$displayId] ?? 0);
+    $realm = realmAppearanceLayer($config);
+    $iconFromDisplay = (int) ($realm['displays'][$displayId] ?? $tables['displays'][$displayId] ?? 0);
 
     $base = array_replace(unknownArmoryItem(0), $appearance, [
         'name' => equipSlotLabel($slot) . ' (saved appearance)',
