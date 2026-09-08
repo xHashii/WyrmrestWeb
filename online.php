@@ -46,7 +46,13 @@ require __DIR__ . '/includes/header.php';
           </div>
           <div class="roster-row-body">
             <div class="roster-row-top">
-              <span class="name"><?= htmlspecialchars($p['name']) ?></span>
+              <span class="name">
+                <?php if (!empty($p['guid'])): ?>
+                  <a href="character.php?guid=<?= (int) $p['guid'] ?>"><?= htmlspecialchars($p['name']) ?></a>
+                <?php else: ?>
+                  <?= htmlspecialchars($p['name']) ?>
+                <?php endif; ?>
+              </span>
               <span class="level-pill">Lvl <?= $p['level'] ?></span>
             </div>
             <div class="roster-row-sub"><?= htmlspecialchars($p['race_name']) ?> <?= htmlspecialchars($p['class_name']) ?> · <?= htmlspecialchars($p['zone_name']) ?></div>

@@ -976,6 +976,138 @@ $navItems = [
     background: var(--offline);
   }
   .status-dot.online { background: var(--online); }
+
+  /* ---- Armory: search summary, item levels, diagnostics ---- */
+  .armory-search-field {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .armory-search-field input[type="text"] { width: 100%; }
+
+  .suggest-box {
+    position: absolute;
+    z-index: 30;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    max-height: 320px;
+    overflow-y: auto;
+    background: #12100b;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+  }
+
+  .suggest-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 12px;
+    text-decoration: none;
+    color: var(--text);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .suggest-row:last-child { border-bottom: none; }
+  .suggest-row:hover, .suggest-row.active { background: #1d1810; }
+  .suggest-row:hover .name, .suggest-row.active .name { color: var(--gold-bright); }
+  .suggest-row .icon { width: 18px; height: 18px; border-radius: 3px; }
+  .suggest-row .name { font-size: 13px; font-weight: 600; }
+  .suggest-row .meta { margin-left: auto; font-size: 11px; color: var(--text-faint); }
+
+  .search-summary {
+    margin: 16px 0 2px;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  .equip-row .item-ilvl {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border: 1px solid var(--border-soft);
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--text-faint);
+    vertical-align: middle;
+  }
+
+  .db-error-box {
+    margin-top: 18px;
+    padding: 12px 14px;
+    background: var(--error-bg);
+    border: 1px solid var(--error);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .db-error-box strong { color: var(--text); }
+  .db-error-box ul { margin: 8px 0 8px 18px; padding: 0; }
+  .db-error-box li { margin-bottom: 4px; }
+  .db-error-box li span { color: var(--gold-bright); }
+  .db-error-box a { color: var(--gold-bright); text-decoration: none; }
+
+  .diag-table td { font-size: 12px; vertical-align: top; }
+  .diag-table code { font-size: 12px; }
+
+  .diag-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .diag-pill.ok   { background: rgba(127, 165, 99, 0.15); color: var(--success); border: 1px solid var(--success); }
+  .diag-pill.warn { background: rgba(201, 162, 74, 0.12); color: var(--gold-bright); border: 1px solid var(--gold); }
+  .diag-pill.fail { background: var(--error-bg); color: #e08a7a; border: 1px solid var(--error); }
+
+  .diag-hint { margin-top: 4px; color: var(--text-faint); font-size: 11px; }
+  .diag-legend dd code { font-size: 11px; }
+
+  /* ---- Armory: bags ---- */
+  .bag-total {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-faint);
+    letter-spacing: 0;
+    margin-left: 8px;
+  }
+
+  .bag-group { margin-bottom: 18px; }
+  .bag-group:last-child { margin-bottom: 0; }
+
+  .bag-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .bag-head .bag-name { font-size: 13px; font-weight: 600; }
+  .bag-head .bag-meta { font-size: 11px; color: var(--text-faint); }
+
+  .bag-empty { margin: 8px 0 0; font-size: 12px; font-style: italic; color: var(--text-faint); }
+
+  ul.bag-list {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 24px;
+  }
+  @media (max-width: 600px) {
+    ul.bag-list { grid-template-columns: 1fr; }
+  }
+  ul.bag-list li { font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; }
+  ul.bag-list .item-count { color: var(--text-faint); font-size: 11px; }
+
+  .roster-row .name a, .lb-name a { color: inherit; text-decoration: none; }
+  .roster-row .name a:hover, .lb-name a:hover { color: var(--gold-bright); }
 </style>
 </head>
 <body>

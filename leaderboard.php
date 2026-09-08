@@ -32,7 +32,13 @@ require __DIR__ . '/includes/header.php';
             <img class="icon" src="<?= htmlspecialchars($p['class_icon']) ?>" alt="<?= htmlspecialchars($p['class_name']) ?>" title="<?= htmlspecialchars($p['class_name']) ?>" onerror="this.classList.add('icon-missing')">
             <img class="icon" src="<?= htmlspecialchars($p['race_icon']) ?>" alt="<?= htmlspecialchars($p['race_name']) ?>" title="<?= htmlspecialchars($p['race_name']) ?>" onerror="this.classList.add('icon-missing')">
           </span>
-          <span class="lb-name"><?= htmlspecialchars($p['name']) ?></span>
+          <span class="lb-name">
+            <?php if (!empty($p['guid'])): ?>
+              <a href="character.php?guid=<?= (int) $p['guid'] ?>"><?= htmlspecialchars($p['name']) ?></a>
+            <?php else: ?>
+              <?= htmlspecialchars($p['name']) ?>
+            <?php endif; ?>
+          </span>
           <span class="lb-level">Lvl <?= $p['level'] ?></span>
         </div>
       <?php endforeach; ?>

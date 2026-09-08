@@ -38,9 +38,21 @@ return [
      * who's currently online, the leaderboard, and the Armory (character/
      * guild lookup). Leave 'db_host' blank to hide all of those sections.
      *
-     * The Armory also reads `item_sparse` from the hotfixes database and
-     * `account_access` from the auth database (to hide GM characters) —
-     * same user, just needs SELECT granted on those two tables too:
+     * This one connection is all the Armory strictly needs — characters,
+     * their equipped items and guilds all live in the `characters` database:
+     *
+     *   characters           name, race, class, level, zone, ...
+     *   character_inventory  which item instance sits in which slot
+     *                        (bag = 0, slot 0-18 = the equipped gear)
+     *   item_instance        instance guid -> itemEntry (item template id)
+     *   guild / guild_member / guild_rank
+     *
+     * Two extras are optional. Each is queried on its own and is allowed to
+     * fail — if a GRANT is missing you lose that one detail, never the page:
+     *
+     *   auth.account_access      hides Game Master characters
+     *   hotfixes.item_sparse     names for custom / hotfixed items
+     *
      *   CREATE USER 'wow_readonly'@'%' IDENTIFIED BY 'SomeStrongPassword';
      *   GRANT SELECT ON characters.* TO 'wow_readonly'@'%';
      *   GRANT SELECT ON hotfixes.item_sparse TO 'wow_readonly'@'%';
@@ -48,23 +60,60 @@ return [
      *   FLUSH PRIVILEGES;
      * ('%' rather than 'localhost' because PHP connects via 127.0.0.1,
      * and MySQL treats that as a different host than 'localhost'.)
+     *
+     * Not sure whether all of that is wired up? Open armory-diagnostics.php
+     * — it checks every one of these and tells you what to fix.
      */
     'db_host' => '127.0.0.1',
     'db_port' => 3306,
     'db_name' => 'characters',
     'db_user' => 'wow_readonly',
     'db_pass' => 'qazxswer12',
-    'world_db_name' => 'world', // database name for item_template lookups (Armory)
-    'auth_db_name'  => 'auth',  // database name for account_access (Armory GM hiding)
-    'hotfixes_db_name' => 'hotfixes', // database name for item_sparse (Armory item names/quality)
+
+    /**
+     * Item names, quality and item level.
+     *
+     * On 3.4.3 there is no `world`.`item_template` any more — TrinityCore
+     * reads item templates straight from the client's DB2 files, and the
+     * `hotfixes` database only mirrors the rows the server hotfixes on top
+     * of them (usually none at all). So the Armory resolves an itemEntry in
+     * this order:
+     *
+     *   1. hotfixes.item_sparse   custom/edited items win
+     *   2. world.item_template    only exists on 3.3.5-era cores; skipped otherwise
+     *   3. db2/ItemSparse.*.csv   the bundled client export — always works
+     *
+     * Leave a name blank to skip that source entirely.
+     */
+    'world_db_name'    => 'world',    // only used if this core still has item_template
+    'auth_db_name'     => 'auth',     // account_access, for hiding GM characters
+    'hotfixes_db_name' => 'hotfixes', // item_sparse, for custom/hotfixed items
+
+    // Where the bundled DB2 export and its generated index live. The defaults
+    // are the db2/ and cache/ folders next to this file; cache/ must be
+    // writable by the web server, otherwise the CSV is scanned on every
+    // lookup (slower, but still correct).
+    // 'db2_dir'   => __DIR__ . '/db2',
+    // 'cache_dir' => __DIR__ . '/cache',
+
     'realm_id'      => 1,       // matches your realm's ID in the auth db
     'hide_game_masters' => true, // hide GM characters/guild members from the Armory
 
     /**
+     * Show what a character is carrying (equipped bags + backpack) on their
+     * Armory page. `character_inventory` holds those rows right next to the
+     * equipped ones, so it costs nothing extra to read; set it to false if
+     * you'd rather keep player inventories private. Bank, buyback and
+     * reagent-bank slots are never shown either way.
+     */
+    'show_bag_contents' => true,
+
+    /**
      * When true, a "Connection details" toggle appears in the status bar
-     * showing the raw SOAP error if the realm is offline — handy while
-     * you're setting things up. Leave false once it's working, so real
-     * visitors don't see internal connection errors.
+     * showing the raw SOAP error if the realm is offline, and the Armory
+     * pages print the reason behind any database problem they hit (instead
+     * of silently showing an empty result). Leave false once everything
+     * works, so real visitors don't see internal connection errors.
      */
     'debug' => false,
 ];
