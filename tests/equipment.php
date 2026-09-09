@@ -225,6 +225,77 @@ $many = array_replace($config, ['db2_dir' => $manyDir, 'cache_dir' => $work . '/
 equipmentCheck(15, itemAppearanceCandidateCount($many, 901, 4, 5), 'Every candidate survives beyond the former twelve-item cap');
 equipmentCheck(0, resolveItemFromAppearance($many, 901, 4, 5), 'Fifteen shared templates remain ambiguous');
 
+// ---------------------------------------------------------------------------
+// Identity recovery from real realm evidence. The equipment cache stores no
+// item ID, but a candidate that exists as an item_instance (owned by this
+// character, or anywhere on the realm) is hard evidence it is the live item.
+// ---------------------------------------------------------------------------
+$row = static fn (int $id, int $preferred = 0, int $junk = 0): array => [$id, 4, 5, $preferred, 0, 0, 0, 200, $junk];
+$verdict = itemAppearanceIdentityVerdict([], [], []);
+equipmentCheck(0, $verdict['entry'], 'No candidates means no identity');
+$verdict = itemAppearanceIdentityVerdict([$row(11)], [], []);
+equipmentCheck(11, $verdict['entry'], 'A single candidate is unique');
+equipmentCheck('unique', $verdict['confidence'], 'A single candidate reports its confidence tier');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12)], [], []);
+equipmentCheck(0, $verdict['entry'], 'Two candidates with no evidence stay anonymous');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12)], [12 => 1], []);
+equipmentCheck(12, $verdict['entry'], 'The only candidate the character owns is identified');
+equipmentCheck('character', $verdict['confidence'], 'Character-owned evidence reports its tier');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12)], [11 => 1, 12 => 1], []);
+equipmentCheck(11, $verdict['entry'], 'Several owned lookalikes become a best match, not a refusal');
+equipmentCheck('realm-best', $verdict['confidence'], 'Several owned lookalikes are disclosed as a best match');
+equipmentCheck(12, $verdict['alternatives'][0]['entry'] ?? 0, 'The other owned lookalike is disclosed as an alternative');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12)], [], [12 => 2]);
+equipmentCheck(12, $verdict['entry'], 'The only candidate present on the realm is identified');
+equipmentCheck('realm-unique', $verdict['confidence'], 'Realm-unique evidence reports its tier');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12), $row(13)], [], [11 => 5, 12 => 2]);
+equipmentCheck(11, $verdict['entry'], 'With several realm candidates the commonest is the best match');
+equipmentCheck('realm-best', $verdict['confidence'], 'A best match among several is labelled as such');
+equipmentCheck(1, count($verdict['alternatives']), 'Only the other realm-supported lookalike is disclosed');
+equipmentCheck(12, $verdict['alternatives'][0]['entry'], 'Alternatives keep their item ID');
+$verdict = itemAppearanceIdentityVerdict([$row(11), $row(12)], [12 => 1], [11 => 50, 12 => 1]);
+equipmentCheck(12, $verdict['entry'], 'What the character owns outranks what the realm owns');
+$verdict = itemAppearanceIdentityVerdict([$row(11, 1), $row(12)], [], [11 => 1, 12 => 99]);
+equipmentCheck(11, $verdict['entry'], 'An explicit override still pins the identity over evidence');
+$verdict = itemAppearanceIdentityVerdict([$row(11, 1), $row(12, 1)], [], [11 => 1, 12 => 1]);
+equipmentCheck(0, $verdict['entry'], 'Two conflicting overrides stay unresolved');
+
+// The ladder flows through the full item builder and the paper doll.
+$manyAppearance = ['inventory_type' => 5, 'display_id' => 901, 'enchant_visual' => 0, 'subclass' => 4, 'secondary_appearance_id' => 0];
+$ownedMatch = cachedAppearanceItem($many, 4, $manyAppearance, null, ['owned_entries' => [107 => 2]]);
+equipmentCheck(107, $ownedMatch['entry'], 'A cache slot is named from an instance the character owns');
+equipmentCheck('Shared Chest 107', $ownedMatch['name'], 'The recovered name is the real item name');
+equipmentCheck('appearance-character', $ownedMatch['identity_confidence'], 'Owned-instance recovery is labelled');
+equipmentCheck(false, $ownedMatch['identity_ambiguous'], 'A recovered slot is no longer flagged ambiguous');
+equipmentCheck(200, $ownedMatch['item_level'], 'A recovered slot carries the real item level');
+$realmUnique = cachedAppearanceItem($many, 4, $manyAppearance, null, ['realm_counts' => [105 => 3]]);
+equipmentCheck(105, $realmUnique['entry'], 'A cache slot is named from the only realm-recorded lookalike');
+equipmentCheck('appearance-realm-unique', $realmUnique['identity_confidence'], 'Realm-unique recovery is labelled');
+$realmBest = cachedAppearanceItem($many, 4, $manyAppearance, null, ['realm_counts' => [100 => 5, 101 => 2, 102 => 1]]);
+equipmentCheck(100, $realmBest['entry'], 'The commonest realm lookalike is the best match');
+equipmentCheck('Shared Chest 101', $realmBest['identity_alternatives'][0]['name'] ?? '', 'Alternatives are resolved to real names');
+equipmentCheck(true, str_contains((string) $realmBest['identity_note'], 'Best match'), 'The tooltip explains the best-match basis');
+equipmentCheck(200, averageItemLevel([4 => $realmBest]), 'A best-match recovery contributes its real item level');
+equipmentCheck(105, resolveItemFromAppearance($many, 901, 4, 5, null, 0, ['realm_counts' => [105 => 3]]), 'The standalone resolver accepts injected realm evidence');
+$stillAnonymous = cachedAppearanceItem($many, 4, $manyAppearance, null, ['owned_entries' => [], 'realm_counts' => []]);
+equipmentCheck(0, $stillAnonymous['entry'], 'With no evidence at all the slot stays anonymous');
+equipmentCheck(true, $stillAnonymous['identity_ambiguous'], 'An evidence-less shared look stays flagged ambiguous');
+$item = $realmBest;
+$slot = 4;
+ob_start();
+include __DIR__ . '/../includes/equipment-slot.php';
+$bestMatchSlotHtml = (string) ob_get_clean();
+equipmentCheck(true, str_contains($bestMatchSlotHtml, 'Shared Chest 100'), 'The paper doll shows the recovered item name');
+equipmentCheck(true, str_contains($bestMatchSlotHtml, 'wowhead.com/wotlk/item=100'), 'A recovered item links to Wowhead');
+equipmentCheck(true, str_contains($bestMatchSlotHtml, 'Also seen with this look'), 'Alternatives are shown to visitors');
+$item = $stillAnonymous;
+ob_start();
+include __DIR__ . '/../includes/equipment-slot.php';
+$anonymousSlotHtml = (string) ob_get_clean();
+equipmentCheck(true, str_contains($anonymousSlotHtml, 'shared by 15 items'), 'The paper doll explains ambiguous identity to visitors');
+equipmentCheck(false, str_contains($anonymousSlotHtml, 'wowhead.com/wotlk/item='), 'An anonymous look never links to another item');
+equipmentCheck(true, str_contains($anonymousSlotHtml, 'named automatically'), 'The anonymous message says how the slot gets named');
+
 foreach (['meta/character/7.json', 'meta/armor/1/12345.json', 'models/character/7.mo3', 'mo3/character/human/male/humanmale.mo3', 'textures/135274.webp'] as $path) {
     equipmentCheck(true, validModelAssetPath($path), 'Expected model asset paths are allowed');
 }
