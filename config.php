@@ -81,9 +81,12 @@ return [
      *
      *   1. hotfixes.item_sparse   custom/edited items win
      *   2. world.item_template    only exists on 3.3.5-era cores; skipped otherwise
-     *   3. db2/ItemSparse.*.csv   the bundled client export — always works
+     *   3. data/item-overrides.json — explicitly verified realm corrections
+     *   4. db2/ItemSparse.*.csv   the bundled client export — always works
      *
-     * Leave a name blank to skip that source entirely.
+     * Leave a database name blank to skip that source. Never create an
+     * override from ItemModifiedAppearance alone; confirm the exact item ID in
+     * item_instance or matching Item + ItemSparse hotfix rows first.
      */
     'world_db_name'    => 'world',    // only used if this core still has item_template
     'auth_db_name'     => 'auth',     // account_access, for hiding GM characters

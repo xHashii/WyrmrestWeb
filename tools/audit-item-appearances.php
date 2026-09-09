@@ -1,207 +1,399 @@
 <?php
 /**
- * Audit of appearance -> item resolution.
- *
- * The equipmentCache only stores a look (display id + subclass + inventory
- * type), and several items can share one look, so some slots can never be
- * resolved with certainty from static data. This tool lists every case the
- * resolver has to guess, so a realm operator can pin the right item in
- * data/item-overrides.json instead of discovering mismatches one by one.
+ * Complete item-template, appearance, and live-armory coverage audit.
  *
  * Usage:
- *   php tools/audit-item-appearances.php [--limit N] [--suggest] [--junk]
+ *   php tools/audit-item-appearances.php [--limit=N] [--json] [--junk] [--suggest]
  *
- * Sections:
- *   1. items the bundled export cannot describe at all (referenced by the
- *      appearance graph, but no Item/ItemSparse row) — these are invisible
- *      to the old resolver;
- *   2. looks that are shared by more than one item;
- *   3. shared looks that stay ambiguous after subclass + inventory type +
- *      class filtering (the resolver must guess; consider an override);
- *   4. looks that only exist in the realm's own hotfixes data (custom items);
- *   5. --suggest: draft overrides for ambiguous looks that involve an item
- *      the export cannot describe (the likely realm item).
+ * --json emits every compared ID, not samples. The database is optional; set
+ * ARMORY_AUDIT_NO_DB=1 for a deterministic bundled-export audit. With database
+ * access, every exact item_instance.itemEntry referenced by character_inventory
+ * is compared with bundled, hotfix, world, and explicit-override metadata.
  *
- * The database is optional: without it the realm hotfixes layer is skipped.
+ * ItemModifiedAppearance is deliberately audited as an appearance graph, not
+ * an item catalog. Its dangling ItemIDs are reported and excluded; they must
+ * never be copied into item-overrides.json unless a real inventory instance or
+ * matching Item + ItemSparse hotfix rows independently prove the template.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
     exit;
 }
+// The complete --json report retains several 45k-ID sets at once. Keep this
+// CLI-only audit independent from the web worker's intentionally smaller cap.
+@ini_set('memory_limit', '512M');
 
 require __DIR__ . '/../includes/bootstrap.php';
 
-// CLI runs (e.g. in CI or a sandbox) may not have a reachable database; the
-// export-based sections still work without it. Set ARMORY_AUDIT_NO_DB=1 to
-// skip the realm hotfixes layer and equipped observations.
 if (getenv('ARMORY_AUDIT_NO_DB')) {
     $config['db_host'] = '';
 }
 
 $limit = 30;
-$suggest = false;
+$jsonOutput = false;
 $showJunk = false;
+$suggest = false;
 foreach (array_slice($argv, 1) as $arg) {
-    if ($arg === '--suggest') {
-        $suggest = true;
+    if ($arg === '--json') {
+        $jsonOutput = true;
     } elseif ($arg === '--junk') {
         $showJunk = true;
-    } elseif (preg_match('/^--limit=(\d+)$/', $arg, $m)) {
-        $limit = max(0, (int) $m[1]);
+    } elseif ($arg === '--suggest') {
+        $suggest = true;
+    } elseif (preg_match('/^--limit=(\d+)$/', $arg, $match)) {
+        $limit = max(0, (int) $match[1]);
     } else {
         fwrite(STDERR, "Unknown argument: {$arg}\n");
         exit(1);
     }
 }
 
+/** @return list<int> */
+function auditSortedIds(array $set): array
+{
+    $ids = array_map('intval', array_keys($set));
+    sort($ids, SORT_NUMERIC);
+    return $ids;
+}
+
+/** @return array<int, true> */
+function auditSetDifference(array $left, array $right): array
+{
+    return array_diff_key($left, $right);
+}
+
+function auditTextIds(array $ids, int $limit): string
+{
+    if (!$ids || $limit <= 0) {
+        return '(none shown)';
+    }
+    $sample = array_slice($ids, 0, $limit);
+    return implode(', ', $sample) . (count($ids) > $limit ? ', …' : '');
+}
+
+$itemRows = [];
+foreach (itemVisualCsvRows(itemVisualCsvPath($config, 'Item'), ['ID', 'InventoryType', 'IconFileDataID'], ['SubclassID']) as $row) {
+    $itemRows[(int) $row['ID']] = [
+        'inventory_type' => (int) $row['InventoryType'],
+        'subclass' => (int) $row['SubclassID'],
+        'icon_file_data_id' => (int) $row['IconFileDataID'],
+    ];
+}
+
+$sparseRows = [];
+$oppositeFactionIds = [];
+$craftingReagentIds = [];
+foreach (itemVisualCsvRows(
+    itemSparseCsvPath($config),
+    ['ID', 'InventoryType'],
+    ['Display_lang', 'OppositeFactionItemID', 'ModifiedCraftingReagentItemID'],
+    ['Display_lang']
+) as $row) {
+    $sparseRows[(int) $row['ID']] = [
+        'inventory_type' => (int) $row['InventoryType'],
+        'name' => (string) $row['Display_lang'],
+    ];
+    if ((int) $row['OppositeFactionItemID'] > 0) {
+        $oppositeFactionIds[(int) $row['OppositeFactionItemID']] = true;
+    }
+    if ((int) $row['ModifiedCraftingReagentItemID'] > 0) {
+        $craftingReagentIds[(int) $row['ModifiedCraftingReagentItemID']] = true;
+    }
+}
+
+$appearanceRows = [];
+foreach (itemVisualCsvRows(itemVisualCsvPath($config, 'ItemAppearance'), ['ID', 'ItemDisplayInfoID', 'DefaultIconFileDataID']) as $row) {
+    $appearanceRows[(int) $row['ID']] = [
+        'display_id' => (int) $row['ItemDisplayInfoID'],
+        'icon_file_data_id' => (int) $row['DefaultIconFileDataID'],
+    ];
+}
+
+$imaSourceIds = [];
+$imaRows = 0;
+$imaMissingAppearances = [];
+foreach (itemVisualCsvRows(itemVisualCsvPath($config, 'ItemModifiedAppearance'), ['ID', 'ItemID', 'ItemAppearanceID']) as $row) {
+    $imaRows++;
+    $itemId = (int) $row['ItemID'];
+    $imaSourceIds[$itemId] = true;
+    if (!isset($appearanceRows[(int) $row['ItemAppearanceID']])) {
+        $imaMissingAppearances[(int) $row['ID']] = true;
+    }
+}
+
+$itemSet = array_fill_keys(array_keys($itemRows), true);
+$sparseSet = array_fill_keys(array_keys($sparseRows), true);
+$stockSet = array_intersect_key($itemSet, $sparseSet);
+$itemOnly = auditSetDifference($itemSet, $sparseSet);
+$sparseOnly = auditSetDifference($sparseSet, $itemSet);
+$appearanceOrphans = auditSetDifference($imaSourceIds, $stockSet);
+$orphanItemOnly = array_intersect_key($appearanceOrphans, $itemOnly);
+$orphanSparseOnly = array_intersect_key($appearanceOrphans, $sparseOnly);
+$orphanNeither = auditSetDifference($appearanceOrphans, $itemSet + $sparseSet);
+$missingOppositeFaction = auditSetDifference($oppositeFactionIds, $stockSet);
+$missingCraftingReagents = auditSetDifference($craftingReagentIds, $stockSet);
+
+$itemEffectRows = 0;
+$itemEffectParentIds = [];
+foreach (itemVisualCsvRows(itemVisualCsvPath($config, 'ItemEffect'), ['ID', 'ParentItemID']) as $row) {
+    $itemEffectRows++;
+    if ((int) $row['ParentItemID'] > 0) {
+        $itemEffectParentIds[(int) $row['ParentItemID']] = true;
+    }
+}
+$effectParentsOutsideTemplates = auditSetDifference($itemEffectParentIds, $stockSet);
+$effectParentsOutsideItem = auditSetDifference($itemEffectParentIds, $itemSet);
+
 $tables = itemVisualTables($config);
+$overrides = itemOverrides($config);
 $realm = realmAppearanceLayer($config);
-$names = $realm['names'] ?? [];
-$db2names = static function (int $entry) use ($names): string {
-    if (isset($names[$entry])) {
-        return $names[$entry];
-    }
-    $row = itemDb2Lookup($GLOBALS['config'], [$entry])[$entry] ?? null;
-    return $row ? $row['name'] : '⟨missing from export⟩';
-};
 
-$unnamedIds = array_map('intval', $tables['unnamed'] ?? []);
-$untypedIds = array_map('intval', $tables['untyped'] ?? []);
-$allLooks = count($tables['resolve']);
-$shared = 0;
-$ambiguous = 0;
-$ambiguousDetails = [];
-$realmOnlyLooks = [];
+$equippable = [];
+$withoutDisplay = [];
+$withoutIcon = [];
+$missingIconName = [];
+$inventoryMismatches = [];
+$iconNames = json_decode((string) @file_get_contents(__DIR__ . '/../data/item-icon-names.json'), true) ?: [];
+foreach ($stockSet as $id => $_) {
+    if (($itemRows[$id]['inventory_type'] ?? 0) <= 0) {
+        continue;
+    }
+    $equippable[$id] = true;
+    $visual = $tables['items'][$id] ?? [0, 0, 0, 0];
+    if ((int) ($visual[0] ?? 0) <= 0) {
+        $withoutDisplay[$id] = true;
+    }
+    $icon = (int) ($visual[1] ?? 0);
+    if ($icon <= 0) {
+        $withoutIcon[$id] = true;
+    } elseif (!isset($iconNames[(string) $icon]) && !isset($iconNames[$icon])) {
+        $missingIconName[$id] = true;
+    }
+    if ((int) $itemRows[$id]['inventory_type'] !== (int) $sparseRows[$id]['inventory_type']) {
+        $inventoryMismatches[$id] = true;
+    }
+}
 
-foreach ($tables['resolve'] as $display => $rows) {
-    $merged = itemAppearanceMergeCandidates($rows, $realm['resolve'][$display] ?? []);
-    if (count($merged) > 1) {
-        $shared++;
+$candidatePairs = 0;
+$sharedDisplays = 0;
+$maxCandidates = 0;
+$overFormerCap = 0;
+$placeholderCandidates = 0;
+$ambiguousDisplays = [];
+$allDisplayIds = array_fill_keys(array_keys($tables['resolve']), true)
+    + array_fill_keys(array_keys($realm['resolve'] ?? []), true);
+foreach ($allDisplayIds as $display => $_) {
+    $baseRows = $tables['resolve'][$display] ?? [];
+    $realmRows = $realm['resolve'][$display] ?? [];
+    $rows = itemAppearanceMergeCandidates($baseRows, $realmRows);
+    $candidatePairs += count($rows);
+    $maxCandidates = max($maxCandidates, count($rows));
+    if (count($rows) > 1) {
+        $sharedDisplays++;
     }
-    // Any candidate that only the realm layer knows = custom realm item.
-    $realmEntries = [];
-    foreach ($realm['resolve'][$display] ?? [] as $row) {
-        $realmEntries[(int) $row[0]] = true;
+    if (count($rows) > 12) {
+        $overFormerCap++;
     }
-    foreach ($merged as $row) {
-        if (isset($realmEntries[(int) $row[0]])) {
-            $realmOnlyLooks[$display] = true;
+    foreach ($rows as $row) {
+        if (!empty($row[8])) {
+            $placeholderCandidates++;
         }
     }
-    // Ambiguity: after subclass + inventory type + class, >1 candidate may
-    // still be selectable (class masks overlap or are unknown).
+
+    // Find at least one type/subclass group whose ordinary candidates can be
+    // worn by a common class. Such a cache-only display must remain anonymous.
     $groups = [];
-    foreach ($merged as $row) {
-        $key = $row[1] . ':' . $row[2];
-        $groups[$key][] = $row;
+    foreach ($rows as $row) {
+        $groups[$row[1] . ':' . $row[2]][] = $row;
     }
     foreach ($groups as $group) {
-        if (count($group) < 2) {
+        $ordinary = array_values(array_filter($group, static fn (array $row): bool => empty($row[8])));
+        $eligible = $ordinary ?: $group;
+        if (count($eligible) < 2) {
             continue;
         }
-        $classCompatible = false;
-        for ($i = 0; $i < count($group) && !$classCompatible; $i++) {
-            for ($j = $i + 1; $j < count($group); $j++) {
-                $a = (int) $group[$i][6];
-                $b = (int) $group[$j][6];
+        $overlap = false;
+        for ($i = 0; $i < count($eligible) && !$overlap; $i++) {
+            for ($j = $i + 1; $j < count($eligible); $j++) {
+                $a = (int) $eligible[$i][6];
+                $b = (int) $eligible[$j][6];
                 if ($a === 0 || $b === 0 || ($a & $b) !== 0) {
-                    $classCompatible = true;
+                    $overlap = true;
                     break;
                 }
             }
         }
-        if ($classCompatible) {
-            $ambiguous++;
-            $ambiguousDetails[] = ['display' => (int) $display, 'rows' => $group];
+        if ($overlap) {
+            $ambiguousDisplays[(int) $display] = true;
+            break;
         }
     }
 }
 
-echo "Appearance resolution audit\n";
-echo str_repeat('=', 72) . "\n";
-echo "looks: " . number_format($allLooks) . ", shared by >1 item: " . number_format($shared)
-   . ", ambiguous after slot+class filtering: " . number_format($ambiguous) . "\n";
-
-echo "\n1. Items the export cannot describe (no Item/ItemSparse row)\n";
-echo str_repeat('-', 72) . "\n";
-echo count($unnamedIds) . " referenced by the appearance graph but with no name in the bundled export;\n"
-   . count($untypedIds) . " of them also have no subclass/inventory type (recovered as untyped).\n";
-if ($limit > 0 && $unnamedIds) {
-    echo "sample:\n";
-    foreach (array_slice($unnamedIds, 0, $limit) as $id) {
-        $visual = $realm['items'][$id] ?? $tables['items'][$id] ?? [0, 0, 0, 0];
-        printf("  %-8d display=%-8d icon=%-8d %s\n", $id, $visual[0] ?? 0, $visual[1] ?? 0, $db2names($id));
-    }
-}
-
-echo "\n2. Shared looks (more than one item, resolver must rank them)\n";
-echo str_repeat('-', 72) . "\n";
-echo number_format($shared) . " shared looks; " . number_format(count($realmOnlyLooks))
-   . " contain items only the realm's hotfixes data knows (custom items).\n";
-
-echo "\n3. Ambiguous shared looks (same slot, class-compatible candidates)\n";
-echo str_repeat('-', 72) . "\n";
-echo number_format($ambiguous) . " looks where the resolver has to guess. ";
-if ($limit > 0 && $ambiguousDetails) {
-    echo "sample:\n";
-    usort($ambiguousDetails, static fn ($a, $b) => count($b['rows']) <=> count($a['rows']));
-    foreach (array_slice($ambiguousDetails, 0, $limit) as $detail) {
-        $list = [];
-        foreach ($detail['rows'] as $row) {
-            $mark = !empty($row[8]) ? ' [placeholder]' : '';
-            $list[] = $row[0] . ' ' . $db2names((int) $row[0]) . $mark;
-        }
-        echo '  display ' . $detail['display'] . ' (' . count($detail['rows']) . " candidates):\n";
-        foreach ($list as $line) {
-            echo '    ' . $line . "\n";
-        }
-    }
-}
-
-if ($suggest) {
-    echo "\n5. Suggested overrides (review before using)\n";
-    echo str_repeat('-', 72) . "\n";
-    echo "Draft entries for ambiguous looks that include an item the export cannot\n";
-    echo "describe — that item is the likely realm item and should be pinned.\n\n";
-    $draft = [];
-    foreach ($ambiguousDetails as $detail) {
-        $missing = null;
-        foreach ($detail['rows'] as $row) {
-            if (!isset($names[(int) $row[0]]) && $row[1] < 0) {
-                $missing = $row;
-                break;
-            }
-        }
-        if ($missing) {
-            $draft[(string) $missing[0]] = [
-                'display_id' => $detail['display'],
-                'inventory_type' => $missing[2] >= 0 ? $missing[2] : 0,
-                'subclass' => $missing[1] >= 0 ? $missing[1] : 0,
-                'allowable_class' => $missing[6] ?: 0,
-                'comment' => 'Audit suggestion: verify name/quality/item level against the realm client, then add them.',
-            ];
-        }
-    }
-    if (!$draft) {
-        echo "(none found)\n";
+$dbAvailable = !empty($config['db_host']) && connectCharactersDb($config) !== null;
+$inventoryEntries = $dbAvailable ? realmInventoryItems($config) : [];
+$resolvedInventory = $inventoryEntries ? resolveItems($config, array_keys($inventoryEntries)) : [];
+$observedBundled = [];
+$observedOverride = [];
+$observedRealmTemplate = [];
+$observedDynamic = [];
+$observedUnresolved = [];
+$observedWithoutVisual = [];
+$inventoryVisuals = $inventoryEntries ? itemVisuals($config, array_keys($inventoryEntries)) : [];
+foreach ($inventoryEntries as $id => $instances) {
+    if (isset($stockSet[$id])) {
+        $observedBundled[$id] = $instances;
+    } elseif (isset($overrides[$id])) {
+        $observedOverride[$id] = $instances;
+    } elseif (isset($realm['items'][$id])) {
+        $observedRealmTemplate[$id] = $instances;
+    } elseif (isset($resolvedInventory[$id])) {
+        $observedDynamic[$id] = $instances;
     } else {
-        echo json_encode(['schema' => 1, 'items' => $draft], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        $observedUnresolved[$id] = $instances;
+    }
+    if ((int) ($inventoryVisuals[$id]['display_id'] ?? 0) <= 0) {
+        $observedWithoutVisual[$id] = $instances;
     }
 }
 
+$report = [
+    'generated_at_utc' => gmdate('c'),
+    'bundled_catalog' => [
+        'item_count' => count($itemSet),
+        'item_sparse_count' => count($sparseSet),
+        'stock_template_count' => count($stockSet),
+        'item_only_count' => count($itemOnly),
+        'sparse_only_count' => count($sparseOnly),
+        'item_ids' => auditSortedIds($itemSet),
+        'item_sparse_ids' => auditSortedIds($sparseSet),
+        'stock_template_ids' => auditSortedIds($stockSet),
+        'item_only_ids' => auditSortedIds($itemOnly),
+        'sparse_only_ids' => auditSortedIds($sparseOnly),
+    ],
+    'table_reference_integrity' => [
+        'item_effect_row_count' => $itemEffectRows,
+        'item_effect_parent_id_count' => count($itemEffectParentIds),
+        'item_effect_parent_ids' => auditSortedIds($itemEffectParentIds),
+        'effect_parent_outside_template_count' => count($effectParentsOutsideTemplates),
+        'effect_parent_outside_template_ids' => auditSortedIds($effectParentsOutsideTemplates),
+        'effect_parent_outside_item_count' => count($effectParentsOutsideItem),
+        'effect_parent_outside_item_ids' => auditSortedIds($effectParentsOutsideItem),
+        'opposite_faction_reference_count' => count($oppositeFactionIds),
+        'missing_opposite_faction_template_count' => count($missingOppositeFaction),
+        'missing_opposite_faction_template_ids' => auditSortedIds($missingOppositeFaction),
+        'crafting_reagent_reference_count' => count($craftingReagentIds),
+        'missing_crafting_reagent_template_count' => count($missingCraftingReagents),
+        'missing_crafting_reagent_template_ids' => auditSortedIds($missingCraftingReagents),
+    ],
+    'appearance_graph' => [
+        'modified_appearance_rows' => $imaRows,
+        'referenced_item_id_count' => count($imaSourceIds),
+        'referenced_item_ids' => auditSortedIds($imaSourceIds),
+        'dangling_item_id_count' => count($appearanceOrphans),
+        'dangling_item_ids' => auditSortedIds($appearanceOrphans),
+        'dangling_item_only_ids' => auditSortedIds($orphanItemOnly),
+        'dangling_sparse_only_ids' => auditSortedIds($orphanSparseOnly),
+        'dangling_missing_both_ids' => auditSortedIds($orphanNeither),
+        'missing_item_appearance_row_count' => count($imaMissingAppearances),
+        'missing_item_appearance_ids' => auditSortedIds($imaMissingAppearances),
+        'candidate_pair_count' => $candidatePairs,
+        'display_count' => count($allDisplayIds),
+        'shared_display_count' => $sharedDisplays,
+        'ambiguous_display_count' => count($ambiguousDisplays),
+        'ambiguous_display_ids' => auditSortedIds($ambiguousDisplays),
+        'maximum_candidates_per_display' => $maxCandidates,
+        'displays_over_former_12_candidate_cap' => $overFormerCap,
+        'placeholder_candidate_count' => $placeholderCandidates,
+    ],
+    'equippable_visuals' => [
+        'stock_equippable_count' => count($equippable),
+        'without_display_count' => count($withoutDisplay),
+        'without_display_ids' => auditSortedIds($withoutDisplay),
+        'without_icon_count' => count($withoutIcon),
+        'without_icon_ids' => auditSortedIds($withoutIcon),
+        'missing_icon_name_count' => count($missingIconName),
+        'missing_icon_name_ids' => auditSortedIds($missingIconName),
+        'inventory_type_mismatch_count' => count($inventoryMismatches),
+        'inventory_type_mismatch_ids' => auditSortedIds($inventoryMismatches),
+    ],
+    'realm_armory' => [
+        'database_available' => $dbAvailable,
+        'observed_unique_item_count' => count($inventoryEntries),
+        'observed_instance_count' => array_sum($inventoryEntries),
+        'bundled_ids' => auditSortedIds($observedBundled),
+        'explicit_override_ids' => auditSortedIds($observedOverride),
+        'realm_hotfix_template_ids' => auditSortedIds($observedRealmTemplate),
+        'other_dynamic_metadata_ids' => auditSortedIds($observedDynamic),
+        'unresolved_item_ids' => auditSortedIds($observedUnresolved),
+        'without_native_visual_ids' => auditSortedIds($observedWithoutVisual),
+    ],
+    'explicit_override_ids' => auditSortedIds($overrides),
+];
+
+if ($jsonOutput) {
+    echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    exit(0);
+}
+
+$line = str_repeat('=', 78);
+echo "Complete item and appearance coverage audit\n{$line}\n";
+echo sprintf(
+    "Bundled Item: %s | ItemSparse: %s | authoritative intersection: %s\n",
+    number_format(count($itemSet)), number_format(count($sparseSet)), number_format(count($stockSet))
+);
+echo "Item-only IDs (" . count($itemOnly) . '): ' . auditTextIds(auditSortedIds($itemOnly), $limit) . "\n";
+echo "Sparse-only IDs (" . count($sparseOnly) . '): ' . auditTextIds(auditSortedIds($sparseOnly), $limit) . "\n";
+echo number_format($itemEffectRows) . ' ItemEffect rows reference ' . number_format(count($itemEffectParentIds))
+    . ' parent IDs; ' . number_format(count($effectParentsOutsideTemplates)) . ' lack a complete template ('
+    . number_format(count($effectParentsOutsideItem)) . " also lack Item); effect references do not create templates.\n";
+echo number_format(count($oppositeFactionIds)) . ' opposite-faction references and '
+    . number_format(count($craftingReagentIds)) . ' crafting-reagent references; '
+    . number_format(count($missingOppositeFaction) + count($missingCraftingReagents)) . " targets lack a complete template.\n";
+
+echo "\nAppearance graph\n" . str_repeat('-', 78) . "\n";
+echo number_format($imaRows) . ' modified-appearance rows reference ' . number_format(count($imaSourceIds)) . " item IDs.\n";
+echo number_format(count($appearanceOrphans)) . " source IDs have no Item+ItemSparse template and are visual-only, not items to add.\n";
+echo 'Dangling sample: ' . auditTextIds(auditSortedIds($appearanceOrphans), $limit) . "\n";
+echo number_format(count($imaMissingAppearances)) . " rows reference a missing ItemAppearance row.\n";
+echo number_format($candidatePairs) . ' valid item/display pairs across ' . number_format(count($allDisplayIds)) . " displays; "
+    . number_format($sharedDisplays) . ' displays are shared and ' . number_format(count($ambiguousDisplays)) . " remain class/slot ambiguous.\n";
+echo "Maximum candidates on one display: {$maxCandidates}; {$overFormerCap} displays exceed the former unsafe cap of 12.\n";
 if ($showJunk) {
-    echo "\n4. Placeholder candidates (\"Monster -\", \"Test...\") ranked last\n";
-    echo str_repeat('-', 72) . "\n";
-    $junkCount = 0;
-    foreach ($tables['resolve'] as $display => $rows) {
-        foreach (itemAppearanceMergeCandidates($rows, $realm['resolve'][$display] ?? []) as $row) {
-            if (!empty($row[8])) {
-                $junkCount++;
-            }
-        }
-    }
-    echo number_format($junkCount) . " candidates across " . number_format($allLooks) . " looks.\n";
+    echo number_format($placeholderCandidates) . " NPC/test placeholder candidates are excluded when an ordinary candidate exists.\n";
 }
 
-echo "\nPinned by data/item-overrides.json: " . count(itemOverrides($config)) . " item(s).\n";
-echo "Done.\n";
+echo "\nEquippable stock visual coverage\n" . str_repeat('-', 78) . "\n";
+echo number_format(count($equippable)) . ' templates; ' . number_format(count($withoutDisplay))
+    . " have no appearance display (many are rings, bags, deprecated, or test entries).\n";
+echo 'Without display sample: ' . auditTextIds(auditSortedIds($withoutDisplay), $limit) . "\n";
+echo number_format(count($withoutIcon)) . ' have no icon; ' . number_format(count($missingIconName))
+    . " nonzero icons lack a bundled CDN filename; " . number_format(count($inventoryMismatches)) . " Item/Sparse inventory types disagree.\n";
+
+echo "\nLive realm armory coverage\n" . str_repeat('-', 78) . "\n";
+if (!$dbAvailable) {
+    echo "Database unavailable/skipped: bundled coverage is complete, but live inventory IDs were not audited.\n";
+} else {
+    echo number_format(count($inventoryEntries)) . ' unique IDs across ' . number_format(array_sum($inventoryEntries)) . " inventory-linked instances.\n";
+    echo count($observedBundled) . ' bundled, ' . count($observedOverride) . ' explicit override, '
+        . count($observedRealmTemplate) . ' realm hotfix template, ' . count($observedDynamic) . " other dynamically resolved.\n";
+    echo 'Unresolved exact inventory IDs (' . count($observedUnresolved) . '): '
+        . auditTextIds(auditSortedIds($observedUnresolved), $limit) . "\n";
+    echo 'Inventory IDs without a native visual (' . count($observedWithoutVisual) . '): '
+        . auditTextIds(auditSortedIds($observedWithoutVisual), $limit) . "\n";
+}
+
+echo "\nExplicit overrides: " . count($overrides) . "\n";
+if ($suggest) {
+    echo "\nSafe override guidance\n" . str_repeat('-', 78) . "\n";
+    if (!$dbAvailable) {
+        echo "No suggestions: connect the characters database first so item_instance.itemEntry can prove each custom ID.\n";
+    } elseif (!$observedUnresolved) {
+        echo "No unresolved inventory IDs require an override. Shared appearances are intentionally not auto-pinned.\n";
+    } else {
+        echo "These exact inventory IDs need authoritative realm/client metadata before an override can be written:\n  "
+            . implode(', ', auditSortedIds($observedUnresolved)) . "\n";
+        echo "Do not infer their names or stats from a same-look ItemModifiedAppearance row.\n";
+    }
+}
+echo "\nUse --json for the complete compared ID lists. Done.\n";

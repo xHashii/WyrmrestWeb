@@ -782,38 +782,77 @@ function getCharacterInventory(array $config, int $guid, ?int $characterClass = 
 
     $rows = [];
     try {
-        // Inventory locations are authoritative; itemEntry is a TEMPLATE id,
-        // while ci.item -> ii.guid is the INSTANCE id. Never join them by entry.
+        // Mirror WyrmrestCore Item::GetDisplayId: active-spec primary
+        // appearance first, then the all-spec value. itemEntry remains the
+        // exact equipped identity; these optional columns affect visuals only.
         $stmt = $pdo->prepare('
             SELECT ci.bag, ci.slot, ci.item AS item_guid,
-                   ii.itemEntry, ii.count, ii.durability, ii.owner_guid
+                   ii.itemEntry, ii.count, ii.durability, ii.owner_guid,
+                   CASE c.activeTalentGroup
+                     WHEN 0 THEN iit.itemModifiedAppearanceSpec1
+                     WHEN 1 THEN iit.itemModifiedAppearanceSpec2
+                     WHEN 2 THEN iit.itemModifiedAppearanceSpec3
+                     WHEN 3 THEN iit.itemModifiedAppearanceSpec4
+                     WHEN 4 THEN iit.itemModifiedAppearanceSpec5
+                     ELSE 0
+                   END AS primary_appearance_spec,
+                   iit.itemModifiedAppearanceAllSpecs AS primary_appearance_all,
+                   CASE c.activeTalentGroup
+                     WHEN 0 THEN iit.secondaryItemModifiedAppearanceSpec1
+                     WHEN 1 THEN iit.secondaryItemModifiedAppearanceSpec2
+                     WHEN 2 THEN iit.secondaryItemModifiedAppearanceSpec3
+                     WHEN 3 THEN iit.secondaryItemModifiedAppearanceSpec4
+                     WHEN 4 THEN iit.secondaryItemModifiedAppearanceSpec5
+                     ELSE 0
+                   END AS secondary_appearance_spec,
+                   iit.secondaryItemModifiedAppearanceAllSpecs AS secondary_appearance_all
             FROM characters c
             JOIN character_inventory ci ON ci.guid = c.guid
             LEFT JOIN item_instance ii ON ii.guid = ci.item
+            LEFT JOIN item_instance_transmog iit ON iit.itemGuid = ci.item
             WHERE c.guid = :guid
             ORDER BY ci.bag ASC, ci.slot ASC
         ');
         $stmt->execute(['guid' => $guid]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $inventory['status']['inventory'] = $rows ? 'available' : 'empty';
-    } catch (\Throwable $e) {
-        // A missing item_instance table/GRANT must not erase known occupied
-        // slots. Retry just the locations, then use the appearance cache below.
-        dbNoteError('read character inventory and item instances', $e);
+    } catch (\Throwable $transmogError) {
+        // Optional on older/trimmed schemas. Retry exact inventory before
+        // degrading to location-only data.
         try {
+            // Inventory locations are authoritative; itemEntry is a TEMPLATE
+            // id, while ci.item -> ii.guid is an INSTANCE id.
             $stmt = $pdo->prepare('
                 SELECT ci.bag, ci.slot, ci.item AS item_guid,
-                       NULL AS itemEntry, NULL AS count, NULL AS durability, NULL AS owner_guid
+                       ii.itemEntry, ii.count, ii.durability, ii.owner_guid
                 FROM characters c
                 JOIN character_inventory ci ON ci.guid = c.guid
+                LEFT JOIN item_instance ii ON ii.guid = ci.item
                 WHERE c.guid = :guid
                 ORDER BY ci.bag ASC, ci.slot ASC
             ');
             $stmt->execute(['guid' => $guid]);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $inventory['status']['inventory'] = $rows ? 'partial' : 'empty';
-        } catch (\Throwable $locationError) {
-            dbNoteError('read character inventory locations', $locationError);
+            $inventory['status']['inventory'] = $rows ? 'available' : 'empty';
+        } catch (\Throwable $e) {
+            // A missing item_instance table/GRANT must not erase known occupied
+            // slots. Retry just the locations, then use the appearance cache.
+            dbNoteError('read character inventory and item instances', $e);
+            try {
+                $stmt = $pdo->prepare('
+                    SELECT ci.bag, ci.slot, ci.item AS item_guid,
+                           NULL AS itemEntry, NULL AS count, NULL AS durability, NULL AS owner_guid
+                    FROM characters c
+                    JOIN character_inventory ci ON ci.guid = c.guid
+                    WHERE c.guid = :guid
+                    ORDER BY ci.bag ASC, ci.slot ASC
+                ');
+                $stmt->execute(['guid' => $guid]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $inventory['status']['inventory'] = $rows ? 'partial' : 'empty';
+            } catch (\Throwable $locationError) {
+                dbNoteError('read character inventory locations', $locationError);
+            }
         }
     }
     $inventory['integrity']['rows'] = count($rows);
@@ -835,23 +874,7 @@ function getCharacterInventory(array $config, int $guid, ?int $characterClass = 
     }
     $items = resolveItems($config, $entries);
     $visuals = itemVisuals($config, array_values(array_unique($entries)));
-    $decorate = static function (array $row) use ($items, $visuals): array {
-        $entry = (int) $row['itemEntry'];
-        $item = $items[$entry] ?? unknownArmoryItem($entry);
-        $visual = $visuals[$entry] ?? [];
-        $item['display_id'] = (int) ($visual['display_id'] ?? 0);
-        $item['icon_file_data_id'] = (int) ($visual['icon_file_data_id'] ?? 0);
-        if (empty($item['inventory_type'])) {
-            $item['inventory_type'] = (int) ($visual['inventory_type'] ?? 0);
-        }
-        $item['slot'] = (int) $row['slot'];
-        $item['bag'] = (int) $row['bag'];
-        $item['item_guid'] = (int) $row['item_guid'];
-        $item['count'] = max(1, (int) $row['count']);
-        $item['durability'] = $row['durability'] !== null ? (int) $row['durability'] : null;
-        $item['equipment_source'] = 'inventory';
-        return $item;
-    };
+    $decorate = static fn (array $row): array => decorateArmoryInventoryRow($config, $row, $items, $visuals);
 
     $containers = [];
     foreach ($rows as $row) {
@@ -931,9 +954,8 @@ function getCharacterEquipment(array $config, int $guid, ?int $characterClass = 
  *      edited items live. Highest VerifiedBuild per id.
  *   2. `world`.`item_template`  — only exists on 3.3.5-era cores; skipped
  *      automatically if the table isn't there.
- *   3. data/item-overrides.json  — curated realm corrections (see itemdb.php):
- *      custom/phase items the client export omits, plus the identity that a
- *      shared appearance belongs to on this realm.
+ *   3. data/item-overrides.json  — explicit, independently verified realm
+ *      corrections (see itemdb.php); never inferred from appearance alone.
  *   4. db2/ItemSparse.*.csv     — the bundled client export (see itemdb.php).
  */
 function resolveItems(array $config, array $entries): array
@@ -1210,6 +1232,21 @@ function armoryDiagnostics(array $config): array
         }
     }
 
+    // Primary transmog rows are optional for identity but required to reproduce
+    // the exact active-spec visual rather than the item's native appearance.
+    try {
+        $count = (int) $pdo->query('SELECT COUNT(*) FROM `item_instance_transmog`')->fetchColumn();
+        $column = $pdo->query("SELECT 1 FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'characters'
+              AND COLUMN_NAME = 'activeTalentGroup' LIMIT 1")->fetchColumn();
+        $add($checks, 'primary transmog visuals', $column ? 'ok' : 'warn',
+            number_format($count) . ' item_instance_transmog row(s); activeTalentGroup ' . ($column ? 'available' : 'missing'),
+            $column ? '' : 'Without characters.activeTalentGroup the Armory falls back to native item visuals.');
+    } catch (\Throwable $e) {
+        $add($checks, 'primary transmog visuals', 'warn', $e->getMessage(),
+            'Grant SELECT on item_instance_transmog. Exact item identity still works, but primary transmog visuals fall back to native appearances.');
+    }
+
     // 3. name collation — the reason plain "=" needed the exact spelling
     try {
         $row = $pdo->query("
@@ -1295,8 +1332,8 @@ function armoryDiagnostics(array $config): array
     // 8. realm appearance data (the hotfixes DB2 layers this server ships)
     $realmLayer = realmAppearanceLayer($config);
     if (empty($config['hotfixes_db_name'])) {
-        $add($checks, 'realm appearance data', 'ok', 'not configured — using the bundled export plus curated overrides',
-            'Set \'hotfixes_db_name\' in config.php to let the appearance resolver read the DB2 rows this server actually sends to clients (custom/phase items).');
+        $add($checks, 'realm appearance data', 'ok', 'not configured — using the bundled export plus explicit overrides',
+            'Set \'hotfixes_db_name\' in config.php to read custom/phase appearance rows. Realm-only identities require matching item and item_sparse rows.');
     } elseif (!$realmLayer['available']) {
         $add($checks, 'realm appearance data', 'warn', 'the hotfixes item_appearance tables are not readable',
             'Falling back to the bundled export plus curated overrides. Check the hotfixes database name/permissions.');
@@ -1305,18 +1342,30 @@ function armoryDiagnostics(array $config): array
             'A stock server ships no DB2 hotfixes; the bundled export is used. On a realm with custom/phase items these tables should carry them.');
     } else {
         $add($checks, 'realm appearance data', 'ok',
-            count($realmLayer['items']) . ' item(s) and ' . count($realmLayer['resolve']) . ' look(s) from the hotfixes table',
-            'This realm\'s own appearance graph is used ahead of the bundled export, so custom/missing items like 51625 resolve from server data.');
+            count($realmLayer['items']) . ' validated item visual(s), ' . count($realmLayer['resolve']) . ' look(s), and '
+                . count($realmLayer['orphans'] ?? []) . ' dangling source ID(s) in realm hotfixes',
+            'Only IDs backed by Item plus ItemSparse become identities; dangling modified-appearance rows remain visual-only.');
     }
 
-    // 9. learned realm observations (what is actually equipped somewhere)
-    $observed = realmEquippedItems($config);
+    // 9. Exact realm inventory-ID coverage; never use popularity to guess
+    // which item owns a cache-only shared appearance.
+    $observed = realmInventoryItems($config);
     if (!$observed) {
-        $add($checks, 'realm-equipped observations', 'ok', 'not available (unreadable inventory) — shared looks rank by curated data only');
+        $add($checks, 'realm inventory item coverage', 'warn',
+            'no exact character_inventory entries were read (the realm may be empty, or inventory access may be unavailable)',
+            'Run tools/audit-item-appearances.php --json for complete bundled and live-ID coverage.');
     } else {
-        $add($checks, 'realm-equipped observations', 'ok',
-            number_format(count($observed)) . ' item entries observed equipped on this realm',
-            'When several items share a look, the one actually worn somewhere on the realm is preferred — shared looks auto-correct without manual entries.');
+        $observedItems = resolveItems($config, array_keys($observed));
+        $missingObserved = array_diff_key($observed, $observedItems);
+        $listed = implode(', ', array_slice(array_keys($missingObserved), 0, 12))
+            . (count($missingObserved) > 12 ? ', …' : '');
+        $add($checks, 'realm inventory item coverage', $missingObserved ? 'warn' : 'ok',
+            number_format(count($observed)) . ' unique exact inventory item IDs; '
+                . count($missingObserved) . ' lack descriptive metadata'
+                . ($missingObserved ? ' (' . $listed . ')' : ''),
+            $missingObserved
+                ? 'Verify these exact item_instance.itemEntry IDs against realm/client data before adding overrides; never copy metadata from a same-look graph row.'
+                : 'Every character_inventory item ID resolves through bundled, hotfix, world, or explicit metadata.');
     }
 
     // 10. curated item overrides (realm-specific corrections)
@@ -1325,14 +1374,14 @@ function armoryDiagnostics(array $config): array
     if (!is_file($overridesPath)) {
         $add($checks, 'item overrides', 'ok', 'no overrides file (using the bundled client export only)');
     } elseif (!$overrides) {
-        $add($checks, 'item overrides', 'warn',
-            basename($overridesPath) . ' exists but has no usable entries',
-            'Expected a JSON object with an "items" map; see data/item-overrides.json for the format.');
+        $add($checks, 'item overrides', 'ok',
+            basename($overridesPath) . ' is valid and contains no explicit realm assertions',
+            'This is the safe default. Add only IDs proven by exact inventory or matching Item + ItemSparse hotfix rows.');
     } else {
         $listed = implode(', ', array_slice(array_keys($overrides), 0, 8)) . (count($overrides) > 8 ? ', …' : '');
         $add($checks, 'item overrides', 'ok',
             basename($overridesPath) . ' — ' . count($overrides) . ' curated item(s): ' . $listed,
-            'These always beat the bundled db2/ItemSparse CSV and are preferred by the appearance resolver for their shared looks. Add entries for any custom/missing realm items.');
+            'Overrides beat bundled metadata. Each must be backed by an observed item_instance.itemEntry or authoritative realm Item + ItemSparse rows.');
     }
 
     // 11. end-to-end: a character with gear
@@ -1392,11 +1441,14 @@ function armoryDiagnostics(array $config): array
             $add($checks, 'characters.equipmentCache', in_array($cacheState, ['available', 'empty'], true) ? 'ok' : 'warn',
                 $cacheState . ': ' . $integrity['cache_slots'] . ' saved equipped appearances; '
                 . $integrity['cache_fallback'] . ' used as fallback',
-                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance. The display ID + subclass + inventory type are resolved back to the item through the bundled DB2 appearance graph, so a character with unreadable inventory tables still shows named gear. Log out in-game to trigger a character save.');
+                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance — no item ID. Unique looks may be named; shared looks remain anonymous but visible until exact inventory is readable. Log out in-game to trigger a character save.');
 
-            $named = array_filter($equipment, static fn ($i) => (int) $i['entry'] > 0 && $i['source'] !== 'unresolved');
+            $named = array_filter($equipment, static fn ($i) => (int) $i['entry'] > 0
+                && !in_array($i['source'], ['unresolved', 'appearance-identity'], true));
+            $ambiguousLooks = array_filter($equipment, static fn ($i) => !empty($i['identity_ambiguous']));
             $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));
-            $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped items resolved';
+            $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped item identities resolved; '
+                . count($ambiguousLooks) . ' shared cache look(s) intentionally anonymous';
             if ($sources) {
                 $detail .= ' (' . implode(', ', array_map(
                     static fn ($k, $v) => "{$v} via {$k}",

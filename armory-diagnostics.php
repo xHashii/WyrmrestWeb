@@ -117,7 +117,7 @@ require __DIR__ . '/includes/header.php';
           <div><dt>item_instance links</dt><dd><?= $saved['integrity']['missing_instance'] ?> missing/unreadable · <?= $saved['integrity']['owner_mismatch'] ?> owner mismatches</dd></div>
           <div><dt>equipmentCache</dt><dd><?= htmlspecialchars($saved['status']['cache']) ?> · <?= $saved['integrity']['cache_slots'] ?> saved appearances · <?= $saved['integrity']['cache_fallback'] ?> used as fallback</dd></div>
         </dl>
-        <p class="roster-empty" style="margin-top: 12px;">The cache stores appearance/display IDs plus each item's subclass and inventory type — not item IDs. Those are resolved back to the item through the bundled DB2 appearance graph, the realm's own hotfixes data, and <code>data/item-overrides.json</code>, so gear can still be named and priced when the inventory tables are unreadable. When several items share one look, the resolver uses a saved secondary appearance, the subclass + inventory type, and the character's class first, then prefers the realm's curated item, then items someone actually has equipped on the realm; NPC-visual placeholders rank last. Items the exports omit are still recovered from the appearance graph. Run <code>php tools/audit-item-appearances.php</code> to list every remaining ambiguous look. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
+        <p class="roster-empty" style="margin-top: 12px;">The cache stores a visible display, inventory type, enchant visual, subclass, and <em>secondary</em> transmog appearance — never <code>itemEntry</code> or the primary modified appearance. Type, subclass, and class filters may leave one valid template; only then can the look be named safely. If several items still share it, the slot remains visibly equipped but anonymous: ranking, realm popularity, and the secondary appearance cannot prove identity. Exact names, stats, and links come from <code>character_inventory.item</code> → <code>item_instance.itemEntry</code>. Primary active-spec transmog visuals come separately from <code>item_instance_transmog</code>. Run <code>php tools/audit-item-appearances.php --json</code> for every compared ID. The website never writes inventory data; log out in-game and refresh to check a new save.</p>
       <?php endif; ?>
       <h2 style="margin-top: 24px;">Equipped items and appearances</h2>
       <?php if (!$trace['equipment']): ?>
@@ -141,7 +141,12 @@ require __DIR__ . '/includes/header.php';
                   <span class="diag-pill <?= $item['equipment_source'] === 'equipment-cache' ? 'warn' : ($item['source'] === 'unresolved' ? 'fail' : 'ok') ?>">
                     <?= htmlspecialchars($item['equipment_source']) ?>
                   </span>
-                  <div class="diag-hint"><?= htmlspecialchars($item['source']) ?></div>
+                  <div class="diag-hint">
+                    <?= htmlspecialchars($item['source']) ?> · <?= htmlspecialchars($item['identity_confidence'] ?? 'unavailable') ?>
+                    <?php if (!empty($item['identity_ambiguous'])): ?>
+                      · <?= (int) ($item['lookalike_count'] ?? 0) ?> possible items
+                    <?php endif; ?>
+                  </div>
                 </td>
               </tr>
             <?php endforeach; ?>
@@ -169,11 +174,15 @@ require __DIR__ . '/includes/header.php';
     </div>
     <div>
       <dt>Saved character appearance</dt>
-      <dd><code>characters.equipmentCache</code> — fallback for unreadable inventory tables. On this core: 34 slots, 5 values each; the display ID + subclass + inventory type are resolved through <code>ItemAppearance</code> → <code>ItemModifiedAppearance</code> back to the item template.</dd>
+      <dd><code>characters.equipmentCache</code> — fallback for unreadable inventory tables. On this core: 34 slots × 5 values. It preserves visuals, but shared displays cannot be reversed into an exact item ID.</dd>
+    </div>
+    <div>
+      <dt>Primary transmog</dt>
+      <dd><code>item_instance_transmog</code> plus <code>characters.activeTalentGroup</code> — active-spec primary appearance, then all-spec primary appearance, then the native item visual.</dd>
     </div>
     <div>
       <dt>Item icons</dt>
-      <dd><code>Item</code> + <code>ItemModifiedAppearance</code> + <code>ItemAppearance</code> CSVs supply icon FileDataIDs and model display IDs. Local <code>images/items/&lt;FileDataID&gt;.png</code> files take priority over remote icons.</dd>
+      <dd><code>Item</code> + <code>ItemModifiedAppearance</code> + <code>ItemAppearance</code> CSVs supply icon FileDataIDs and model display IDs. An identity is stock-valid only when both <code>Item</code> and <code>ItemSparse</code> contain its ID; dangling graph references remain visual-only. Local <code>images/items/&lt;FileDataID&gt;.png</code> files take priority over remote icons.</dd>
     </div>
     <div>
       <dt>Game Master filter</dt>

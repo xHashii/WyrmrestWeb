@@ -8,7 +8,7 @@ require __DIR__ . '/armory-search.php';
 $config['hotfixes_db_name'] = '';
 $config['world_db_name'] = '';
 $checks = 0;
-$pdo->exec('ALTER TABLE characters ADD COLUMN equipmentCache LONGTEXT NULL');
+$pdo->exec('ALTER TABLE characters ADD COLUMN equipmentCache LONGTEXT NULL, ADD COLUMN activeTalentGroup TINYINT UNSIGNED NOT NULL DEFAULT 0');
 $pdo->exec('CREATE TEMPORARY TABLE character_inventory (
     guid BIGINT NOT NULL, bag BIGINT NOT NULL DEFAULT 0, slot INT NOT NULL,
     item BIGINT PRIMARY KEY, UNIQUE (guid, bag, slot)
@@ -16,6 +16,21 @@ $pdo->exec('CREATE TEMPORARY TABLE character_inventory (
 $pdo->exec('CREATE TEMPORARY TABLE item_instance (
     guid BIGINT PRIMARY KEY, itemEntry INT NOT NULL, owner_guid BIGINT NOT NULL,
     count INT NOT NULL DEFAULT 1, durability INT NOT NULL DEFAULT 0
+)');
+$pdo->exec('CREATE TEMPORARY TABLE item_instance_transmog (
+    itemGuid BIGINT PRIMARY KEY,
+    itemModifiedAppearanceAllSpecs INT NOT NULL DEFAULT 0,
+    itemModifiedAppearanceSpec1 INT NOT NULL DEFAULT 0,
+    itemModifiedAppearanceSpec2 INT NOT NULL DEFAULT 0,
+    itemModifiedAppearanceSpec3 INT NOT NULL DEFAULT 0,
+    itemModifiedAppearanceSpec4 INT NOT NULL DEFAULT 0,
+    itemModifiedAppearanceSpec5 INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceAllSpecs INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceSpec1 INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceSpec2 INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceSpec3 INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceSpec4 INT NOT NULL DEFAULT 0,
+    secondaryItemModifiedAppearanceSpec5 INT NOT NULL DEFAULT 0
 )');
 function savedAppearanceCache(array $slots): string
 {
@@ -51,6 +66,13 @@ $pdo->exec('INSERT INTO item_instance (guid, itemEntry, owner_guid, count, durab
     (5200, 117, 1, 4, 0), (5201, 118, 1, 2, 0), (5202, 36, 1, 1, 20),
     (5203, 37, 1, 1, 20), (5300, 35, 1, 1, 25), (5400, 4496, 1, 1, 0),
     (5401, 36, 1, 1, 20), (6000, 25, 3, 1, 20), (8000, 999999999, 99, 1, 0)');
+// Character 1 uses spec 2. Its spec-specific primary/secondary appearances
+// must beat the deliberately different all-spec values.
+$pdo->exec('UPDATE characters SET activeTalentGroup = 1 WHERE guid = 1');
+$pdo->exec('INSERT INTO item_instance_transmog (
+    itemGuid, itemModifiedAppearanceAllSpecs, itemModifiedAppearanceSpec2,
+    secondaryItemModifiedAppearanceAllSpecs, secondaryItemModifiedAppearanceSpec2
+) VALUES (5000, 122206, 116883, 179507, 179925)');
 $pdo->exec('INSERT INTO character_inventory (guid, bag, slot, item) VALUES
     (1, 0, 15, 5000), (1, 0, 3, 5001), (1, 0, 30, 5100),
     (1, 0, 35, 5200), (1, 0, 58, 5201), (1, 0, 59, 5202), (1, 0, 93, 5203),
@@ -65,6 +87,12 @@ checkSame(5000, $gear['equipped'][15]['item_guid'], 'The instance id stays separ
 checkSame('Worn Shortsword', $gear['equipped'][15]['name'], 'Real item names resolve without hotfixes or world tables');
 checkSame(135274, $gear['equipped'][15]['icon_file_data_id'], 'Real inventory items get an icon');
 checkSame('inventory', $gear['equipped'][15]['equipment_source'], 'The cache never overrides a valid inventory record');
+checkSame('inventory-exact', $gear['equipped'][15]['identity_confidence'], 'item_instance supplies exact identity');
+checkSame(25, $gear['equipped'][15]['entry'], 'Transmog never replaces the equipped item identity');
+checkSame($staff, $gear['equipped'][15]['display_id'], 'The active-spec primary transmog controls the visible display');
+checkSame($sword, $gear['equipped'][15]['native_display_id'], 'The native item visual remains available for diagnostics');
+checkSame(116883, $gear['equipped'][15]['transmog_item_modified_appearance_id'], 'The selected primary appearance ID is exposed');
+checkSame(64822, $gear['equipped'][15]['secondary_display_id'], 'The active-spec secondary appearance remains separate visual data');
 checkSame([35, 58], array_keys($gear['backpack']), 'Bank begins at 59 on this core; its contents must not leak into the backpack');
 checkSame(1, count($gear['bags']), 'Bank bags are not equipped carried bags');
 checkSame(35, $gear['bags'][0]['contents'][0]['entry'], 'Carried bag contents are linked by the bag INSTANCE guid');
@@ -83,11 +111,14 @@ checkSame(2, $cacheOnly['equipped'][0]['quality'], 'A cache-only slot recovers t
 checkSame(26, averageItemLevel($cacheOnly['equipped']), 'Cache-resolved items contribute their real item level to the average');
 
 $paladinCache = getCharacterInventory($config, 21, 2);
-checkSame(51625, $paladinCache['equipped'][4]['entry'], 'A cache-only paladin chest resolves to the curated heroic tier item, not the shared-model drop');
-checkSame('Sanctified Lightsworn Chestguard', $paladinCache['equipped'][4]['name'], 'A cache-only paladin chest shows the realm item name');
+checkSame(0, $paladinCache['equipped'][4]['entry'], 'A shared cache-only paladin chest is not assigned a fabricated item');
+checkSame(true, $paladinCache['equipped'][4]['identity_ambiguous'], 'Shared chest identity is explicitly ambiguous');
+checkSame(4, $paladinCache['equipped'][4]['lookalike_count'], 'All class-compatible chest identities are reported');
+checkSame(63921, $paladinCache['equipped'][4]['display_id'], 'The anonymous chest still renders its saved appearance');
 $shamanCache = getCharacterInventory($config, 22, 7);
-checkSame(54577, $shamanCache['equipped'][7]['entry'], 'A cache-only shaman feet slot resolves to the curated phase-5 item');
-checkSame(284, $shamanCache['equipped'][7]['item_level'], 'A cache-only shaman feet slot shows the real item level');
+checkSame(0, $shamanCache['equipped'][7]['entry'], 'A shared cache-only feet look is not guessed as Returning Footfalls');
+checkSame(true, $shamanCache['equipped'][7]['identity_ambiguous'], 'Shared feet identity is explicit');
+checkSame(5, $shamanCache['equipped'][7]['lookalike_count'], 'All matching feet templates remain candidates');
 
 $mixed = getCharacterInventory($config, 3);
 checkSame([15], array_keys($mixed['equipped']), 'Stale cache does not resurrect an unequipped head slot');

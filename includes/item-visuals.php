@@ -2,40 +2,23 @@
 /**
  * Item icons, model display IDs, and appearance -> item resolution.
  *
- * Sources, strongest first, all merged into one lookup graph:
- *   1. data/item-overrides.json         curated realm corrections (explicit)
- *   2. `hotfixes` DB2 tables             the data this server actually ships
- *                                        to clients (custom/phase items)
- *   3. the bundled 3.4.3 client exports  the generic fallback
- * ...and, at resolution time, what can be seen equipped on the realm
- * (character_inventory + item_instance) is used as a preference signal.
- *
  * An item ID, an ItemAppearance ID, a display ID and an icon FileDataID are
- * different namespaces — never silently treat one as another. But the client
- * DB2 files DO let us walk the appearance graph backwards:
+ * separate namespaces. ItemModifiedAppearance lets us find which *valid item
+ * templates* share a display, but it is not itself an item catalogue: Blizzard
+ * ships stale/dangling ItemID references in that table. An ID is a stock item
+ * template only when both Item and ItemSparse describe it. A custom realm item
+ * must likewise have authoritative item + item_sparse rows, or an explicit
+ * data/item-overrides.json record based on a real item_instance.itemEntry.
  *
- *     display ID  --ItemAppearance-->  appearance ID
- *     appearance ID  --ItemModifiedAppearance-->  item ID(s)
- *
- * That is exactly what Wowhead / the WotLK item database do to turn a saved
- * character appearance (characters.equipmentCache stores a DISPLAY id, plus
- * the item's subclass and inventory type) into a real item. Several items can
- * share one look, so the resolver is deliberately conservative and layers the
- * signals it trusts:
- *
- *   - the cache's subclass + inventory type filter the candidates,
- *   - the character's class rejects items it cannot equip,
- *   - a saved secondary appearance (ItemModifiedAppearance id, used by the
- *     transmog system) resolves the item exactly,
- *   - curated overrides win, then items someone actually has equipped on the
- *     realm, then ordinary items; NPC-visual placeholders ("Monster - ...",
- *     "Test ...") are ranked last,
- *   - the default/lowest-ordered appearance only breaks remaining ties.
- *
- * Items the exports omit entirely are still recovered from the appearance
- * graph: their display/icon and any realm data apply, and they participate in
- * resolution as "untyped" candidates (used when no fully-known item matches
- * the slot), so a missing item is never invisible again.
+ * WyrmrestCore's characters.equipmentCache contains a visible display ID,
+ * inventory type, enchant visual, visible subclass and a SECONDARY transmog
+ * appearance. It does not contain the equipped itemEntry or the primary
+ * modified appearance. Consequently a shared display cannot be reversed to an
+ * exact item identity. The resolver returns an ID only when filtering by saved
+ * type/subclass/class leaves one real candidate (or one explicit override).
+ * Ambiguous cache slots keep their correct visual but do not receive invented
+ * names, stats or Wowhead links. Exact identity always comes from
+ * character_inventory -> item_instance.itemEntry.
  */
 function itemVisualCsvPath(array $config, string $table): ?string
 {
@@ -79,9 +62,6 @@ function itemVisualCsvRows(?string $path, array $columns, array $optional = [], 
     }
 }
 
-/** At most this many candidate items are kept per shared display ID. */
-const ITEM_APPEARANCE_MAX_CANDIDATES = 12;
-
 /**
  * Is this a placeholder a player can never equip (NPC visuals, test items)?
  * These share looks with real gear and must rank below it.
@@ -92,20 +72,20 @@ function itemAppearanceJunkName(string $name): bool
 }
 
 /**
- * Compact, generated lookup tables from the bundled exports. Rebuilt when any
- * source CSV or the curated override file changes.
- *   items:     item ID => [display ID, icon FileDataID, inventory type, subclass]
- *              (0s where the export lacks the row; see 'untyped')
- *   displays:  display ID => icon FileDataID
- *   ima:       ItemModifiedAppearance ID => [item ID, subclass, inventory type]
- *              (exact link; used when a cache records a secondary appearance)
- *   resolve:   display ID => [item ID, subclass, inventory type, preferred,
- *                             rank, order, class mask, item level, junk], ...
- *              (overrides first, then non-placeholder, then rank/order)
- *   untyped:   item IDs referenced by the appearance graph but missing from
- *              the Item export (their subclass/inventory type is unknown)
- *   unnamed:   item IDs with no ItemSparse row (cannot be named locally)
- * A read-only cache directory falls back to building in memory for this request.
+ * Compact lookup tables generated from the bundled exports.
+ *
+ *   items:       Item ID => [display, icon FileDataID, inventory type, subclass]
+ *   templates:   IDs backed by both Item and ItemSparse (plus explicit overrides)
+ *   displays:    display ID => icon FileDataID
+ *   ima:         valid ItemModifiedAppearance ID => [item ID, subclass, type]
+ *   ima_visuals: every IMA ID => [display, icon], including dangling source rows
+ *   resolve:     display ID => valid candidate rows
+ *   orphans:     ItemIDs referenced by IMA but missing Item or ItemSparse
+ *   unnamed:     Item rows with no ItemSparse metadata
+ *
+ * Dangling IMA rows remain useful for rendering a requested appearance, but
+ * are never promoted into item identities. A read-only cache directory falls
+ * back to building these tables in memory for the request.
  */
 function itemVisualTables(array $config): array
 {
@@ -117,7 +97,6 @@ function itemVisualTables(array $config): array
             $sources[$table] = $path;
         }
     }
-    // ItemSparse supplies AllowableClass/ItemLevel/name/quality for ranking.
     $sparse = itemSparseCsvPath($config);
     if ($sparse !== null) {
         $sources['ItemSparse'] = $sparse;
@@ -133,18 +112,28 @@ function itemVisualTables(array $config): array
     if (isset($memo[$stamp])) {
         return $memo[$stamp];
     }
+
     $cacheDir = itemCacheDir($config);
-    $cache = $cacheDir . '/item-visuals-v4-' . $stamp . '.json';
+    $cache = $cacheDir . '/item-visuals-v6-' . $stamp . '.json';
     if (is_file($cache)) {
         $decoded = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($decoded) && is_array($decoded['items'] ?? null)
-            && is_array($decoded['displays'] ?? null) && is_array($decoded['resolve'] ?? null)
-            && is_array($decoded['ima'] ?? null)) {
+        if (is_array($decoded)
+            && is_array($decoded['items'] ?? null)
+            && is_array($decoded['templates'] ?? null)
+            && is_array($decoded['displays'] ?? null)
+            && is_array($decoded['resolve'] ?? null)
+            && is_array($decoded['ima'] ?? null)
+            && is_array($decoded['ima_visuals'] ?? null)
+            && is_array($decoded['orphans'] ?? null)) {
             return $memo[$stamp] = $decoded;
         }
     }
 
-    $data = ['items' => [], 'displays' => [], 'resolve' => [], 'ima' => [], 'untyped' => [], 'unnamed' => []];
+    $data = [
+        'items' => [], 'templates' => [], 'displays' => [], 'resolve' => [],
+        'ima' => [], 'ima_visuals' => [], 'orphans' => [], 'unnamed' => [],
+    ];
+
     // appearance ID => [display ID, icon FileDataID]
     $appearances = [];
     foreach (itemVisualCsvRows($sources['ItemAppearance'] ?? null, ['ID', 'ItemDisplayInfoID', 'DefaultIconFileDataID']) as $row) {
@@ -153,89 +142,91 @@ function itemVisualTables(array $config): array
             $data['displays'][$row['ItemDisplayInfoID']] = $row['DefaultIconFileDataID'];
         }
     }
-    // ItemSparse: item ID => [AllowableClass mask, ItemLevel, name, quality]
+
+    // ItemSparse: item ID => [class mask, item level, name, quality]
     $sparseMeta = [];
     foreach (itemVisualCsvRows($sources['ItemSparse'] ?? null, ['ID', 'AllowableClass', 'ItemLevel'], ['Display_lang', 'OverallQualityID'], ['Display_lang']) as $row) {
         $allowable = $row['AllowableClass'];
         if ($allowable < 0 || $allowable >= 0x7F000000) {
-            $allowable = 0; // -1 / 0xFFFFFFFF = usable by everyone
+            $allowable = 0; // -1 / 0xFFFFFFFF means every class
         }
-        $sparseMeta[$row['ID']] = [$allowable, $row['ItemLevel'], (string) ($row['Display_lang'] ?? ''), $row['OverallQualityID']];
+        $sparseMeta[$row['ID']] = [$allowable, $row['ItemLevel'], (string) $row['Display_lang'], $row['OverallQualityID']];
     }
+
     $needsAppearanceIcon = [];
     foreach (itemVisualCsvRows($sources['Item'] ?? null, ['ID', 'IconFileDataID', 'InventoryType'], ['SubclassID']) as $row) {
-        $data['items'][$row['ID']] = [0, $row['IconFileDataID'], $row['InventoryType'], $row['SubclassID']];
+        $id = $row['ID'];
+        $data['items'][$id] = [0, $row['IconFileDataID'], $row['InventoryType'], $row['SubclassID']];
+        if (isset($sparseMeta[$id])) {
+            $data['templates'][$id] = 1;
+        }
         if ($row['IconFileDataID'] <= 0) {
-            $needsAppearanceIcon[$row['ID']] = true;
+            $needsAppearanceIcon[$id] = true;
         }
     }
+
     $chosen = [];
-    $untyped = [];
+    $orphans = [];
     // display ID => [item ID, subclass, inventory type, preferred,
     //                appearance rank, order index, class mask, item level, junk]
     $candidates = [];
     foreach (itemVisualCsvRows($sources['ItemModifiedAppearance'] ?? null, ['ItemID', 'ItemAppearanceModifierID', 'ItemAppearanceID', 'OrderIndex'], ['ID']) as $row) {
-        $imaId = $row['ID'];
-        $id = $row['ItemID'];
         $appearance = $appearances[$row['ItemAppearanceID']] ?? null;
         if (!$appearance) {
             continue;
         }
-        // Items the export omits still belong to the graph: keep them with
-        // unknown subclass/inventory type so they can be recovered.
-        if (!isset($data['items'][$id])) {
-            $data['items'][$id] = [0, 0, 0, 0];
-            $untyped[$id] = true;
+        $imaId = $row['ID'];
+        $id = $row['ItemID'];
+        if ($imaId > 0) {
+            // A dangling source ItemID can still represent a renderable transmog.
+            $data['ima_visuals'][$imaId] = [$appearance[0], $appearance[1]];
         }
-        // Prefer the default appearance, then the lowest order index.
+
         $rank = [$row['ItemAppearanceModifierID'] === 0 ? 0 : 1, $row['OrderIndex']];
-        if (!isset($chosen[$id]) || $chosen[$id] > $rank) {
+        // An Item row can still provide useful visual data when exact inventory
+        // already supplied its identity, even if Sparse metadata is absent.
+        if (isset($data['items'][$id]) && (!isset($chosen[$id]) || $chosen[$id] > $rank)) {
             $chosen[$id] = $rank;
             $data['items'][$id][0] = $appearance[0];
-            if (isset($needsAppearanceIcon[$id]) || isset($untyped[$id])) {
+            if (isset($needsAppearanceIcon[$id])) {
                 $data['items'][$id][1] = $appearance[1];
             }
         }
-        $display = $appearance[0];
-        if ($display > 0) {
-            [$classMask, $itemLevel, $name] = $sparseMeta[$id] ?? [0, 0, ''];
-            $junk = $name !== '' && itemAppearanceJunkName($name);
-            $candidates[$display][] = [
-                $id,
-                isset($untyped[$id]) ? -1 : $data['items'][$id][3],
-                isset($untyped[$id]) ? -1 : $data['items'][$id][2],
-                0,          // not a curated override
-                $rank[0],
-                $rank[1],
-                $classMask,
-                $itemLevel,
-                $junk,
-            ];
-        }
-        // ItemModifiedAppearance ID -> item: the exact identity used by the
-        // transmog/secondary-appearance system (cache field 5).
-        if ($imaId > 0 && !isset($data['ima'][$imaId])) {
-            $data['ima'][$imaId] = [
-                $id,
-                isset($untyped[$id]) ? -1 : $data['items'][$id][3],
-                isset($untyped[$id]) ? -1 : $data['items'][$id][2],
-            ];
-        }
-    }
-    // Curated overrides: realm-specific items placed into the same lookup
-    // tables, explicitly preferred over generic rows that share their look.
-    foreach (itemOverrides($config) as $id => $override) {
-        $display = (int) ($override['display_id'] ?? 0);
-        if ($display <= 0) {
+
+        // ItemModifiedAppearance is not an item-template table. Only the
+        // Item+ItemSparse intersection can supply a stock cache identity.
+        if (!isset($data['templates'][$id])) {
+            $orphans[$id] = true;
             continue;
         }
+
+        $display = $appearance[0];
+        [$classMask, $itemLevel, $name] = $sparseMeta[$id];
+        if ($display > 0) {
+            $candidates[$display][] = [
+                $id, $data['items'][$id][3], $data['items'][$id][2],
+                0, $rank[0], $rank[1], $classMask, $itemLevel,
+                $name !== '' && itemAppearanceJunkName($name),
+            ];
+        }
+        if ($imaId > 0 && !isset($data['ima'][$imaId])) {
+            $data['ima'][$imaId] = [$id, $data['items'][$id][3], $data['items'][$id][2]];
+        }
+    }
+
+    // An override is an explicit assertion backed by this realm's real data.
+    // It may correct a stock row or define a custom template absent from DB2.
+    foreach (itemOverrides($config) as $id => $override) {
+        $display = (int) ($override['display_id'] ?? 0);
         $subclass = (int) ($override['subclass'] ?? 0);
         $inventoryType = (int) ($override['inventory_type'] ?? 0);
         $icon = (int) ($override['icon_file_data_id'] ?? 0);
         $data['items'][$id] = [$display, $icon, $inventoryType, $subclass];
-        unset($untyped[$id]);
+        $data['templates'][$id] = 1;
+        if ($display <= 0) {
+            continue;
+        }
         if (!empty($data['displays'][$display])) {
-            // Keep the icon already known for the shared look if we have one.
             $icon = $data['displays'][$display];
         } else {
             $data['displays'][$display] = $icon;
@@ -245,44 +236,39 @@ function itemVisualTables(array $config): array
             $classMask = 0;
         }
         $candidates[$display][] = [
-            $id,
-            $subclass,
-            $inventoryType,
-            1,          // preferred: this realm's item for this look
-            0,
-            0,
-            $classMask,
-            (int) ($override['item_level'] ?? 0),
-            0,          // not junk
+            $id, $subclass, $inventoryType,
+            1, 0, 0, $classMask, (int) ($override['item_level'] ?? 0), 0,
         ];
     }
+
     foreach ($candidates as $display => $rows) {
-        // Curated overrides first, then real items, then placeholders, then
-        // default appearance and order index.
+        // Explicit overrides first, then non-placeholder rows, then the
+        // default appearance/order. Keep every distinct item: truncating this
+        // list can make an ambiguous look appear falsely unique.
         usort($rows, static fn ($a, $b) => [$b[3], $a[8], $a[4], $a[5], $a[0]] <=> [$a[3], $b[8], $b[4], $b[5], $b[0]]);
-        $picked = [];
         $seen = [];
         foreach ($rows as $row) {
-            $id = $row[0];
-            if (isset($seen[$id])) {
-                continue;
-            }
-            $seen[$id] = true;
-            $picked[] = $row;
-            if (count($picked) >= ITEM_APPEARANCE_MAX_CANDIDATES) {
-                break;
+            $id = (int) $row[0];
+            if (!isset($seen[$id])) {
+                $seen[$id] = true;
+                $data['resolve'][$display][] = $row;
             }
         }
-        $data['resolve'][$display] = $picked;
     }
-    if ($untyped) {
-        $data['untyped'] = array_map('strval', array_keys($untyped));
+
+    ksort($data['templates'], SORT_NUMERIC);
+    if ($orphans) {
+        $ids = array_keys($orphans);
+        sort($ids, SORT_NUMERIC);
+        $data['orphans'] = array_map('strval', $ids);
     }
+    $overrides = itemOverrides($config);
     foreach ($data['items'] as $id => $row) {
-        if (!isset($sparseMeta[$id])) {
+        if (!isset($sparseMeta[$id]) && !isset($overrides[$id])) {
             $data['unnamed'][] = (string) $id;
         }
     }
+    sort($data['unnamed'], SORT_NUMERIC);
 
     if ($data['items'] || $data['displays']) {
         if (is_dir($cacheDir) || @mkdir($cacheDir, 0775, true)) {
@@ -307,7 +293,8 @@ function itemVisualTables(array $config): array
 /**
  * Merge the bundled-export candidates with the realm's own appearance rows.
  * Same entry: the realm row wins (it describes what this server ships).
- * Result is re-ranked and capped, so callers always see one canonical list.
+ * Result is re-ranked but never truncated: every candidate must remain visible
+ * so an ambiguous display cannot accidentally look unique.
  */
 function itemAppearanceMergeCandidates(array $base, array $realm): array
 {
@@ -320,49 +307,53 @@ function itemAppearanceMergeCandidates(array $base, array $realm): array
     }
     $rows = array_values($byEntry);
     usort($rows, static fn ($a, $b) => [$b[3], $a[8], $a[4], $a[5], $a[0]] <=> [$a[3], $b[8], $b[4], $b[5], $b[0]]);
-    return array_slice($rows, 0, ITEM_APPEARANCE_MAX_CANDIDATES);
+    return $rows;
 }
 
 /**
- * The `hotfixes` database rows this server actually sends to clients: its own
- * copy of the DB2 appearance graphs, plus values for items the bundled export
- * omits entirely (custom/phase items like the realm's 51625). Latest
- * VerifiedBuild per row wins. Returns [] when unconfigured/unreadable:
- *   items:       ID => [display, icon, inventory type, subclass]
- *   displays:    display => icon
- *   ima:         IMA ID => [item ID, subclass, inventory type]
- *   resolve:     display => candidate rows (same shape as itemVisualTables)
- *   sparse:      ID => [class mask, item level]
- *   names:       ID => name (from item_sparse)
- *   available:   whether the tables were readable at all
- * Disk-cached for a few minutes so the armory doesn't re-read thousands of
- * rows on every request.
+ * Realm DB2 hotfix rows, layered over the bundled client export. A realm-only
+ * identity is accepted only when an Item row and an ItemSparse row exist (the
+ * same pair WyrmrestCore requires to build an item template). Appearance rows
+ * with no template remain available in ima_visuals but never become items.
  */
 function realmAppearanceLayer(array $config): array
 {
-    static $memo = null;
-    if ($memo !== null) {
-        return $memo;
+    static $memo = [];
+    $memoKey = sha1(json_encode([
+        $config['db_host'] ?? '', $config['db_port'] ?? 0, $config['db_name'] ?? '',
+        $config['hotfixes_db_name'] ?? '', itemDb2Dir($config), itemOverridesPath($config),
+    ]));
+    if (isset($memo[$memoKey])) {
+        return $memo[$memoKey];
     }
 
-    $empty = ['items' => [], 'displays' => [], 'ima' => [], 'resolve' => [], 'sparse' => [], 'names' => [], 'available' => false];
+    $empty = [
+        'items' => [], 'displays' => [], 'ima' => [], 'ima_visuals' => [],
+        'resolve' => [], 'sparse' => [], 'names' => [], 'orphans' => [],
+        'available' => false,
+    ];
     $pdo = connectCharactersDb($config);
     if (!$pdo || empty($config['hotfixes_db_name'])) {
-        return $memo = $empty;
+        return $memo[$memoKey] = $empty;
     }
     $hotfixes = $config['hotfixes_db_name'];
 
     $dir = itemCacheDir($config);
-    $cache = $dir . '/realm-appearance-v1.json';
+    $cacheKey = substr(sha1(implode('|', [
+        $config['db_host'] ?? '', $config['db_port'] ?? 0,
+        $config['db_name'] ?? '', $hotfixes,
+    ])), 0, 12);
+    $cache = $dir . '/realm-appearance-v3-' . $cacheKey . '.json';
     if (is_file($cache) && (@filemtime($cache) + 300) > time()) {
         $decoded = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($decoded) && isset($decoded['items'], $decoded['ima'], $decoded['resolve'], $decoded['sparse'], $decoded['names'], $decoded['available'])) {
-            return $memo = $decoded;
+        if (is_array($decoded)
+            && isset($decoded['items'], $decoded['ima'], $decoded['ima_visuals'],
+                $decoded['resolve'], $decoded['sparse'], $decoded['names'],
+                $decoded['orphans'], $decoded['available'])) {
+            return $memo[$memoKey] = $decoded;
         }
     }
 
-    // Null means the table could not be read (missing table/GRANT/connection):
-    // the whole layer is then unusable and the bundled export stays in charge.
     $read = static function (string $table, array $columns) use ($pdo, $hotfixes): ?array {
         try {
             $stmt = $pdo->query('SELECT ' . implode(',', $columns) . " FROM `{$hotfixes}`.`{$table}` ORDER BY VerifiedBuild ASC");
@@ -373,12 +364,13 @@ function realmAppearanceLayer(array $config): array
         }
     };
 
-    // latest VerifiedBuild wins: rows arrive ascending, later rows overwrite
     $imaRows = $read('item_modified_appearance', ['ID', 'ItemID', 'ItemAppearanceModifierID', 'ItemAppearanceID', 'OrderIndex']);
     $appearanceRows = $read('item_appearance', ['ID', 'ItemDisplayInfoID', 'DefaultIconFileDataID']);
     if ($imaRows === null || $appearanceRows === null) {
-        return $memo = $empty;
+        return $memo[$memoKey] = $empty;
     }
+
+    // Latest VerifiedBuild wins because rows arrive in ascending build order.
     $ima = [];
     foreach ($imaRows as $row) {
         $ima[(int) $row['ID']] = [
@@ -390,8 +382,25 @@ function realmAppearanceLayer(array $config): array
     foreach ($appearanceRows as $row) {
         $appearances[(int) $row['ID']] = [(int) $row['ItemDisplayInfoID'], (int) $row['DefaultIconFileDataID']];
     }
-    // Optional companion tables: extra types missing items, item gives the
-    // subclass/inventory/icon, item_sparse gives name/class/level.
+    // Hotfix tables can be incremental: a custom IMA may legitimately refer
+    // to a stock ItemAppearance that is present only in the bundled export.
+    $neededAppearances = [];
+    foreach ($ima as $row) {
+        if (!isset($appearances[$row[2]])) {
+            $neededAppearances[$row[2]] = true;
+        }
+    }
+    if ($neededAppearances) {
+        foreach (itemVisualCsvRows(itemVisualCsvPath($config, 'ItemAppearance'), ['ID', 'ItemDisplayInfoID', 'DefaultIconFileDataID']) as $row) {
+            if (isset($neededAppearances[$row['ID']])) {
+                $appearances[$row['ID']] = [$row['ItemDisplayInfoID'], $row['DefaultIconFileDataID']];
+                unset($neededAppearances[$row['ID']]);
+                if (!$neededAppearances) {
+                    break;
+                }
+            }
+        }
+    }
     $extra = [];
     foreach (($read('item_modified_appearance_extra', ['ID', 'DisplayWeaponSubclassID', 'DisplayInventoryType']) ?? []) as $row) {
         $extra[(int) $row['ID']] = [(int) $row['DisplayWeaponSubclassID'], (int) $row['DisplayInventoryType']];
@@ -409,41 +418,75 @@ function realmAppearanceLayer(array $config): array
         $sparse[(int) $row['ID']] = [$allowable, (int) $row['ItemLevel'], trim((string) ($row['Display'] ?? '')), (int) $row['OverallQualityID']];
     }
 
-    $layer = ['items' => [], 'displays' => [], 'ima' => [], 'resolve' => [], 'sparse' => [], 'names' => [], 'available' => true];
-    foreach ($appearances as $appearanceId => $appearance) {
+    $base = itemVisualTables($config);
+
+    $layer = $empty;
+    $layer['available'] = true;
+    foreach ($appearances as $appearance) {
         if ($appearance[0] > 0 && !isset($layer['displays'][$appearance[0]])) {
             $layer['displays'][$appearance[0]] = $appearance[1];
         }
     }
+
     $chosen = [];
+    $orphans = [];
     foreach ($ima as $imaId => $row) {
         [$id, $mod, $appearanceId, $order] = $row;
         $appearance = $appearances[$appearanceId] ?? null;
         if (!$appearance) {
             continue;
         }
-        [$display, $icon] = $appearance;
-        // Subclass/inventory type: the item row wins, extra fills the gap.
+        [$display, $appearanceIcon] = $appearance;
+        $layer['ima_visuals'][$imaId] = [$display, $appearanceIcon];
+
+        $hasBaseTemplate = isset($base['templates'][$id]);
+        $hasItemRow = isset($realmItems[$id]) || isset($base['items'][$id]);
+        $hasSparseRow = isset($sparse[$id]) || $hasBaseTemplate;
+        if (!$hasItemRow || !$hasSparseRow) {
+            $orphans[$id] = true;
+            continue;
+        }
+
+        $baseItem = $base['items'][$id] ?? null;
         $item = $realmItems[$id] ?? null;
-        $sub = $item !== null ? $item[2] : ($extra[$imaId][0] ?? -1);
-        $inv = $item !== null ? $item[1] : ($extra[$imaId][1] ?? -1);
+        $sub = $item !== null ? $item[2] : ($baseItem[3] ?? ($extra[$imaId][0] ?? -1));
+        $inv = $item !== null ? $item[1] : ($baseItem[2] ?? ($extra[$imaId][1] ?? -1));
+        $icon = $item !== null && $item[0] > 0 ? $item[0] : (($baseItem[1] ?? 0) ?: $appearanceIcon);
         $rank = [$mod === 0 ? 0 : 1, $order];
         if ($display > 0 && (!isset($chosen[$id]) || $chosen[$id] > $rank)) {
             $chosen[$id] = $rank;
-            $layer['items'][$id] = [$display, $item !== null ? $item[0] : $icon, $inv >= 0 ? $inv : 0, $sub >= 0 ? $sub : 0];
+            $layer['items'][$id] = [$display, $icon, max(0, $inv), max(0, $sub)];
         }
+
+        $baseCandidate = null;
+        foreach ($base['resolve'][$display] ?? [] as $candidate) {
+            if ((int) $candidate[0] === $id) {
+                $baseCandidate = $candidate;
+                break;
+            }
+        }
+        [$classMask, $itemLevel, $name] = $sparse[$id] ?? [
+            (int) ($baseCandidate[6] ?? 0),
+            (int) ($baseCandidate[7] ?? 0),
+            '',
+        ];
+        $junk = $name !== '' ? itemAppearanceJunkName($name) : !empty($baseCandidate[8]);
         if ($display > 0) {
-            [$classMask, $itemLevel, $name] = $sparse[$id] ?? [0, 0, ''];
             $layer['resolve'][$display][] = [
-                $id, $sub, $inv,
-                0, $rank[0], $rank[1],
-                $classMask, $itemLevel,
-                $name !== '' && itemAppearanceJunkName($name),
+                $id, $sub, $inv, 0, $rank[0], $rank[1],
+                $classMask, $itemLevel, $junk,
             ];
         }
-        if ($imaId > 0) {
-            $layer['ima'][$imaId] = [$id, $sub, $inv];
-        }
+        $layer['ima'][$imaId] = [$id, $sub, $inv];
+    }
+
+    foreach ($layer['resolve'] as $display => $rows) {
+        $layer['resolve'][$display] = itemAppearanceMergeCandidates([], $rows);
+    }
+    if ($orphans) {
+        $ids = array_keys($orphans);
+        sort($ids, SORT_NUMERIC);
+        $layer['orphans'] = array_map('strval', $ids);
     }
     foreach ($sparse as $id => $row) {
         $layer['sparse'][$id] = [$row[0], $row[1]];
@@ -456,78 +499,74 @@ function realmAppearanceLayer(array $config): array
             $json = json_encode($layer);
             if ($json !== false && @file_put_contents($tmp, $json) !== false && @rename($tmp, $cache)) {
                 @chmod($cache, 0664);
+                foreach (glob($dir . '/realm-appearance-v*.json') ?: [] as $old) {
+                    if ($old !== $cache) {
+                        @unlink($old);
+                    }
+                }
             } else {
                 @unlink($tmp);
             }
         }
     }
-    return $memo = $layer;
+    return $memo[$memoKey] = $layer;
 }
 
 /**
- * Which item entries are actually equipped by someone on this realm
- * (entry => number of instances), learned from readable inventory records.
- * This is the strongest general signal for shared looks: an item this realm
- * really wears beats generic export candidates no one equips (NPC visuals,
- * unused/renumbered items). Disk-cached for a few minutes; [] when the DB is
- * unreadable (resolution then falls back to the static data only).
+ * Every exact item entry referenced by character_inventory, including equipped,
+ * profession, bag, backpack, and bank rows. This superset lets the coverage
+ * audit find metadata gaps for every item an Armory deployment may expose.
  */
-function realmEquippedItems(array $config): array
+function realmInventoryItems(array $config): array
 {
-    static $memo = null;
-    if ($memo !== null) {
-        return $memo;
+    static $memo = [];
+    $memoKey = sha1(json_encode([
+        $config['db_host'] ?? '', $config['db_port'] ?? 0, $config['db_name'] ?? '',
+    ]));
+    if (isset($memo[$memoKey])) {
+        return $memo[$memoKey];
     }
-
     $pdo = connectCharactersDb($config);
     if (!$pdo) {
-        return $memo = [];
+        return $memo[$memoKey] = [];
     }
-    $dir = itemCacheDir($config);
-    $cache = $dir . '/realm-equipped-v1.json';
-    if (is_file($cache) && (@filemtime($cache) + 300) > time()) {
-        $decoded = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($decoded) && is_array($decoded['entries'] ?? null)) {
-            $memo = [];
-            foreach ($decoded['entries'] as $entry => $count) {
-                $memo[(int) $entry] = (int) $count;
-            }
-            return $memo;
-        }
-    }
-
     try {
         $stmt = $pdo->query('
             SELECT ii.itemEntry AS entry, COUNT(*) AS n
             FROM item_instance ii
             JOIN character_inventory ci ON ci.item = ii.guid AND ci.guid = ii.owner_guid
-            WHERE ci.bag = 0 AND ci.slot BETWEEN 0 AND 18 AND ii.itemEntry > 0
+            WHERE ii.itemEntry > 0
             GROUP BY ii.itemEntry
-            ORDER BY n DESC
-            LIMIT 5000
+            ORDER BY ii.itemEntry ASC
         ');
         $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
     } catch (\Throwable $e) {
-        dbNoteError('read realm-equipped item observations', $e);
-        return $memo = [];
+        dbNoteError('audit exact realm inventory item entries', $e);
+        return $memo[$memoKey] = [];
     }
-
     $found = [];
     foreach ($rows as $row) {
         $found[(int) $row['entry']] = (int) $row['n'];
     }
-    if ((is_dir($dir) || @mkdir($dir, 0775, true)) && is_writable($dir)) {
-        $tmp = @tempnam($dir, 'realm-equipped-');
-        if ($tmp) {
-            $json = json_encode(['built_at' => time(), 'entries' => $found]);
-            if ($json !== false && @file_put_contents($tmp, $json) !== false && @rename($tmp, $cache)) {
-                @chmod($cache, 0664);
-            } else {
-                @unlink($tmp);
-            }
-        }
+    return $memo[$memoKey] = $found;
+}
+
+/** Resolve an ItemModifiedAppearance ID to visual data, never to identity. */
+function itemModifiedAppearanceVisual(array $config, int $appearanceId): ?array
+{
+    if ($appearanceId <= 0) {
+        return null;
     }
-    return $memo = $found;
+    $tables = itemVisualTables($config);
+    $realm = realmAppearanceLayer($config);
+    $visual = $realm['ima_visuals'][$appearanceId] ?? $tables['ima_visuals'][$appearanceId] ?? null;
+    if (!is_array($visual) || (int) ($visual[0] ?? 0) <= 0) {
+        return null;
+    }
+    return [
+        'display_id' => (int) $visual[0],
+        'icon_file_data_id' => (int) ($visual[1] ?? 0),
+    ];
 }
 
 function itemVisuals(array $config, array $entries): array
@@ -571,124 +610,100 @@ function itemClassAllows(int $classMask, ?int $class): bool
 }
 
 /**
- * Resolve a saved character appearance back to the item template that most
- * likely produced it.
- *
- * The equipmentCache gives us the item's DISPLAY id, plus the subclass and
- * inventory type of whatever was equipped. When it also records a secondary
- * appearance (an ItemModifiedAppearance id — the transmog system's exact
- * identity), that is used directly. Otherwise we walk the appearance graph
- * backwards to the item(s) that share that look, combined with the realm's
- * own hotfixes and overrides, and keep the one that matches the saved
- * subclass + inventory type and the character's class; among the survivors,
- * curated overrides win, then items someone actually wears on this realm,
- * then ordinary items, and only then the default/canonical appearance.
- *
- * Returns the item template id (int), or 0 when no item shares that display.
+ * Valid candidates for a saved display after applying every identity-bearing
+ * field actually present in equipmentCache. No fallback broadens the set when
+ * a saved type/subclass disagrees: doing so would manufacture an identity.
  */
-function resolveItemFromAppearance(array $config, int $displayId, int $subclass = -1, int $inventoryType = -1, ?int $characterClass = null, int $secondaryAppearanceId = 0): int
-{
+function itemAppearanceCandidates(
+    array $config,
+    int $displayId,
+    int $subclass = -1,
+    int $inventoryType = -1,
+    ?int $characterClass = null
+): array {
     if ($displayId <= 0) {
-        return 0;
+        return [];
     }
     $tables = itemVisualTables($config);
     $realm = realmAppearanceLayer($config);
-    $observed = realmEquippedItems($config);
 
-    // Exact identity: a recorded ItemModifiedAppearance id maps straight to
-    // the item that produced the visible look (transmogged/custom items).
-    if ($secondaryAppearanceId > 0) {
-        if (isset($realm['ima'][$secondaryAppearanceId])) {
-            return (int) $realm['ima'][$secondaryAppearanceId][0];
-        }
-        if (isset($tables['ima'][$secondaryAppearanceId])) {
-            return (int) $tables['ima'][$secondaryAppearanceId][0];
-        }
-    }
-
-    // The realm's own graph describes those entries: drop their generic
-    // export rows everywhere (they may link the entry to a different look).
+    // A realm row for the same item replaces the bundled relationship.
     $realmEntries = $realm['items'] ?? [];
     $baseRows = array_values(array_filter(
         $tables['resolve'][$displayId] ?? [],
         static fn (array $candidate): bool => !isset($realmEntries[(int) $candidate[0]])
     ));
-    $candidates = itemAppearanceMergeCandidates($baseRows, $realm['resolve'][$displayId] ?? []);
+    $rows = itemAppearanceMergeCandidates($baseRows, $realm['resolve'][$displayId] ?? []);
+    $rows = array_values(array_filter(
+        $rows,
+        static fn (array $candidate): bool => itemClassAllows((int) $candidate[6], $characterClass)
+    ));
+
+    if ($subclass >= 0) {
+        $rows = array_values(array_filter(
+            $rows,
+            static fn (array $candidate): bool => (int) $candidate[1] === $subclass
+        ));
+    }
+    if ($inventoryType >= 0) {
+        $rows = array_values(array_filter(
+            $rows,
+            static fn (array $candidate): bool => (int) $candidate[2] === $inventoryType
+        ));
+    }
+
+    // NPC/test visual templates do not make a real player item ambiguous when
+    // at least one ordinary template carries the same look.
+    $ordinary = array_values(array_filter($rows, static fn (array $candidate): bool => empty($candidate[8])));
+    return $ordinary ?: $rows;
+}
+
+/**
+ * Resolve a cache-only appearance only when its item identity is defensible.
+ *
+ * WyrmrestCore does not save itemEntry in equipmentCache. Its fifth field is a
+ * secondary shoulder/transmog appearance, not the primary item's modified
+ * appearance, so it cannot identify the equipped item and is intentionally
+ * ignored here. An explicit override may pin one realm-proven identity;
+ * otherwise all filtered candidates must collapse to exactly one item.
+ *
+ * Returns 0 for unknown, inconsistent, or shared appearances. The caller still
+ * renders the saved display/icon, but does not attach somebody else's name,
+ * stats, item level, or Wowhead link.
+ */
+function resolveItemFromAppearance(
+    array $config,
+    int $displayId,
+    int $subclass = -1,
+    int $inventoryType = -1,
+    ?int $characterClass = null,
+    int $secondaryAppearanceId = 0
+): int {
+    $candidates = itemAppearanceCandidates($config, $displayId, $subclass, $inventoryType, $characterClass);
     if (!$candidates) {
         return 0;
     }
 
-    // The character could never have worn an item their class can't use.
-    $eligible = array_values(array_filter(
-        $candidates,
-        static fn (array $candidate): bool => itemClassAllows((int) $candidate[6], $characterClass)
-    ));
-    if (!$eligible) {
-        $eligible = $candidates; // unusual data; keep a visible guess over nothing
+    // Overrides are explicit operator assertions based on a real realm entry.
+    $preferred = array_values(array_filter($candidates, static fn (array $candidate): bool => !empty($candidate[3])));
+    if (count($preferred) === 1) {
+        return (int) $preferred[0][0];
     }
-
-    $pick = static function (array $set) use ($observed): int {
-        // 1. curated realm overrides (newest id first — latest version wins).
-        $preferred = array_values(array_filter($set, static fn (array $c): bool => !empty($c[3])));
-        if ($preferred) {
-            usort($preferred, static fn ($a, $b) => $b[0] <=> $a[0]);
-            return (int) $preferred[0][0];
-        }
-        // 2. items this realm actually has equipped somewhere (most worn first).
-        $seen = array_values(array_filter($set, static fn (array $c): bool => isset($observed[(int) $c[0]])));
-        if ($seen) {
-            usort($seen, static fn ($a, $b) => [$observed[(int) $b[0]], $a[4], $a[5], $a[0]] <=> [$observed[(int) $a[0]], $b[4], $b[5], $b[0]]);
-            return (int) $seen[0][0];
-        }
-        // 3. real items; 4. NPC-visual placeholders.  Rows are pre-ranked.
-        $clean = array_values(array_filter($set, static fn (array $c): bool => empty($c[8])));
-        return (int) ($clean ? $clean[0][0] : $set[0][0]);
-    };
-
-    // Items the exports can't type (missing rows) are still part of the graph.
-    $known = array_values(array_filter($eligible, static fn (array $c): bool => $c[1] >= 0 && $c[2] >= 0));
-    $unknown = array_values(array_filter($eligible, static fn (array $c): bool => $c[1] < 0 || $c[2] < 0));
-
-    // First choice: an exact subclass + inventory type match, best-ranked first.
-    if ($subclass >= 0 && $inventoryType >= 0) {
-        $exact = array_values(array_filter(
-            $known,
-            static fn (array $candidate): bool => (int) $candidate[1] === $subclass && (int) $candidate[2] === $inventoryType
-        ));
-        if ($exact) {
-            return $pick($exact);
-        }
-    }
-    // Next: same inventory type only (weapons/armour of the right kind).
-    if ($inventoryType >= 0) {
-        $sameType = array_values(array_filter(
-            $known,
-            static fn (array $candidate): bool => (int) $candidate[2] === $inventoryType
-        ));
-        if ($sameType) {
-            return $pick($sameType);
-        }
-    }
-    // An untyped candidate (e.g. an item absent from the export with no realm
-    // data) is a better guess than a known item of the wrong kind.
-    if ($unknown) {
-        return $pick($unknown);
-    }
-    // Otherwise take the best-ranked item that carries this look at all.
-    return $pick($eligible);
-}
-
-/**
- * How many distinct items share a display id (used to flag lookalike slots).
- */
-function itemAppearanceCandidateCount(array $config, int $displayId): int
-{
-    if ($displayId <= 0) {
+    if (count($preferred) > 1 || count($candidates) !== 1) {
         return 0;
     }
-    $tables = itemVisualTables($config);
-    $realm = realmAppearanceLayer($config);
-    return count(itemAppearanceMergeCandidates($tables['resolve'][$displayId] ?? [], $realm['resolve'][$displayId] ?? []));
+    return (int) $candidates[0][0];
+}
+
+/** Number of plausible real identities left for a saved appearance. */
+function itemAppearanceCandidateCount(
+    array $config,
+    int $displayId,
+    int $subclass = -1,
+    int $inventoryType = -1,
+    ?int $characterClass = null
+): int {
+    return count(itemAppearanceCandidates($config, $displayId, $subclass, $inventoryType, $characterClass));
 }
 
 /** Prefer locally extracted icons; remote requests can be disabled entirely. */
