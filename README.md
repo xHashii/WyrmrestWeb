@@ -235,7 +235,7 @@ character.php           Character profile + equipment paper doll
 armory-model-asset.php  Fixed-origin, cached assets for the optional 3D viewer
 assets/character.*     Responsive profile styles, slot details and viewer controls
 includes/equipment.php  Saved-appearance parser and equipment layout/model helpers
-includes/item-visuals.php  Validated icons/displays and conservative appearance resolver
+includes/item-visuals.php  Validated icons/displays and evidence-based appearance resolver
 tools/audit-item-appearances.php  Complete bundled + live equipped-ID coverage audit
 includes/wowhead.php      Item stat tooltips fetched from Wowhead and cached (cache/wowhead/)
 data/item-overrides.json  Optional verified realm-specific item assertions
@@ -340,20 +340,35 @@ order above. A custom ID remains visible as an occupied, exact-ID slot even when
 its descriptive metadata is not yet available.
 
 `characters.equipmentCache` is different: it contains a visible look, not an
-item ID. A cache-only look is assigned an identity only when all candidates
-remaining after its saved subclass, inventory type, and character-class filters
-collapse to one valid item. If two or more valid items share the look, the slot
-stays visible but anonymous; it receives no borrowed name, stats, item level,
-price, or Wowhead link and does not affect average item level. Candidate lists
-are never truncated before this decision (valid displays in this export have as
-many as 113 candidates).
+item ID. A cache-only look is identified through an evidence ladder, applied
+after its saved subclass, inventory type, and character-class filters:
+
+1. **unique** — exactly one valid candidate remains (or one explicit override);
+2. **character** — exactly one candidate exists as an `item_instance` this
+   character owns, even when the equipped-slot row is missing;
+3. **realm-unique** — exactly one candidate exists as an `item_instance`
+   anywhere on the realm (equipped, bagged, banked, mailed, or auctioned);
+4. **realm-best** — several exist: the best-supported one is shown (instances
+   the character owns, then realm instance count, then the existing
+   override/junk/appearance ranking), with the runners-up disclosed in the
+   tooltip.
+
+Only when no evidence can name the slot does it stay visible but anonymous;
+it then receives no borrowed name, stats, item level, price, or Wowhead link
+and does not affect average item level. Candidate lists are never truncated
+before this decision (valid displays in this export have as many as 113
+candidates), and every realm-supported decision is labelled in the tooltip
+plus the `identity_confidence` field (`appearance-character`,
+`appearance-realm-unique`, `appearance-realm-best`) so an operator can always
+see which tier named a slot. The realm instance index is only queried when a
+shared look actually needs it, and is cached on disk for five minutes.
 
 The cache's fifth field is a **secondary** shoulder/transmog appearance. It is
 not the primary modified appearance and cannot identify the primary item.
-Likewise, candidate ordering, lower item ID, item level, or the frequency with
-which an item is worn elsewhere on the realm cannot prove identity. An explicit
-override may pin one identity only when the operator has independently verified
-that realm invariant.
+Likewise, candidate ordering, lower item ID, or item level alone cannot prove
+identity — only real realm instances can. An explicit override may pin one
+identity when the operator has independently verified that realm invariant,
+and it outranks instance evidence.
 
 **Template integrity and the bundled audit.** A stock ID is considered a real
 template only when it occurs in both `Item` and `ItemSparse`. For the bundled
@@ -383,7 +398,8 @@ This distinction fixes two previously unsafe defaults:
   remains available from bundled data.
 - `54577` (Returning Footfalls) is already a valid bundled item, but its display
   is shared with four other valid items. A cache look alone cannot prove it is
-  `54577`; exact inventory can.
+  `54577`; exact inventory can, and so can realm instance evidence once a real
+  `54577` exists on the realm while the other four do not.
 
 **Explicit item overrides** (`data/item-overrides.json`) are for verified
 realm-specific templates or corrections. The default catalog is intentionally
@@ -439,11 +455,14 @@ appearances, or bag records for item IDs.
 A cache record always preserves its saved display and icon when that display is
 known. The Armory walks `ItemAppearance` and `ItemModifiedAppearance` only to
 build the set of valid templates sharing that display. It then applies the
-saved inventory type and subclass plus the character's class. Exactly one
-candidate may be named. Zero candidates stays an unknown saved appearance; two
-or more stays an explicitly ambiguous saved appearance. NPC/test placeholder
-rows are ignored when an ordinary valid template remains, but no popularity or
-ranking tie-breaker manufactures identity. Valid inventory records always win.
+saved inventory type and subclass plus the character's class, and identifies
+the slot through the evidence ladder described above: a single remaining
+candidate, an `item_instance` owned by this character, the only lookalike
+recorded on the realm, or — failing those — the best-supported lookalike with
+the runners-up disclosed. Zero candidates stays an unknown saved appearance,
+and a shared look with no instance evidence anywhere stays anonymous until
+evidence appears. NPC/test placeholder rows are ignored when an ordinary valid
+template remains. Valid inventory records always win.
 
 For an inventory-backed item, the exact visible **primary transmog** comes from
 `item_instance_transmog`: the column for `characters.activeTalentGroup` is used

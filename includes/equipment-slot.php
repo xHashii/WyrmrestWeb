@@ -39,10 +39,19 @@ $wowhead = ($hasEntry && isset($wowheadStats) && is_array($wowheadStats))
         <a class="gear-external-link" href="https://www.wowhead.com/wotlk/item=<?= (int) $item['entry'] ?>" target="_blank" rel="noopener noreferrer">View on Wowhead ↗</a>
       <?php else: ?>
         <?php if (!empty($item['identity_ambiguous'])): ?>
-          <p class="gear-meta">This saved appearance is shared by <?= (int) ($item['lookalike_count'] ?? 0) ?> items. The character cache does not store item IDs, so exact inventory access is required before a name or stats can be shown safely.</p>
+          <p class="gear-meta">This saved appearance is shared by <?= (int) ($item['lookalike_count'] ?? 0) ?> items, and the character cache does not store item IDs. It will be named automatically once one of them is recorded on this realm, or when the character's saved inventory becomes readable.</p>
         <?php else: ?>
           <p class="gear-meta">This slot is equipped, but the item's exact ID or details aren't available yet.</p>
         <?php endif; ?>
+      <?php endif; ?>
+      <?php if (!empty($item['identity_note'])): ?>
+        <p class="gear-meta gear-identity-note"><?= htmlspecialchars($item['identity_note']) ?></p>
+      <?php endif; ?>
+      <?php if (!empty($item['identity_alternatives'])): ?>
+        <p class="gear-meta gear-identity-note">Also seen with this look: <?= htmlspecialchars(implode(', ', array_map(
+            static fn (array $alt): string => $alt['name'] . ' (×' . (int) $alt['count'] . ')',
+            $item['identity_alternatives']
+        ))) ?>.</p>
       <?php endif; ?>
     <?php else: ?>
       <p class="gear-meta">Nothing is equipped in this slot.</p>

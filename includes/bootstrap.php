@@ -773,7 +773,7 @@ function getCharacterInventory(array $config, int $guid, ?int $characterClass = 
         'equipped' => [], 'profession' => [], 'bags' => [], 'backpack' => [],
         'status' => ['inventory' => 'unavailable', 'cache' => 'unavailable'],
         'integrity' => ['rows' => 0, 'missing_instance' => 0, 'owner_mismatch' => 0,
-            'orphan_bag' => 0, 'cache_slots' => 0, 'cache_fallback' => 0],
+            'orphan_bag' => 0, 'cache_slots' => 0, 'cache_fallback' => 0, 'cache_named' => 0],
     ];
     $pdo = connectCharactersDb($config);
     if (!$pdo || $guid <= 0) {
@@ -916,17 +916,22 @@ function getCharacterInventory(array $config, int $guid, ?int $characterClass = 
 
     // Only use cached appearances for a wholly unavailable equipped loadout,
     // or an occupied slot with a broken instance link. Do not resurrect stale
-    // cache entries in empty slots of an otherwise readable inventory.
+    // cache entries in empty slots of an otherwise readable inventory. The
+    // guid lets the resolver weigh item instances this character still owns
+    // before falling back to realm-wide evidence.
     $noEquipmentRows = !$inventory['equipped'];
     foreach ($cache['slots'] as $slot => $appearance) {
         $current = $inventory['equipped'][$slot] ?? null;
         if ($noEquipmentRows || ($current !== null && (int) $current['entry'] <= 0)) {
-            $fallback = cachedAppearanceItem($config, $slot, $appearance, $characterClass);
+            $fallback = cachedAppearanceItem($config, $slot, $appearance, $characterClass, ['guid' => $guid]);
             if ($current !== null) {
                 $fallback['item_guid'] = $current['item_guid'];
             }
             $inventory['equipped'][$slot] = $fallback;
             $inventory['integrity']['cache_fallback']++;
+            if ((int) $fallback['entry'] > 0) {
+                $inventory['integrity']['cache_named']++;
+            }
         }
     }
     ksort($inventory['equipped']);
@@ -1347,8 +1352,9 @@ function armoryDiagnostics(array $config): array
             'Only IDs backed by Item plus ItemSparse become identities; dangling modified-appearance rows remain visual-only.');
     }
 
-    // 9. Exact realm inventory-ID coverage; never use popularity to guess
-    // which item owns a cache-only shared appearance.
+    // 9. Exact realm inventory-ID coverage; the audit lists IDs whose metadata
+    // is missing. (Identity recovery for cache-only looks uses the separate
+    // item_instance index, not this list.)
     $observed = realmInventoryItems($config);
     if (!$observed) {
         $add($checks, 'realm inventory item coverage', 'warn',
@@ -1440,15 +1446,24 @@ function armoryDiagnostics(array $config): array
             $cacheState = $inventory['status']['cache'];
             $add($checks, 'characters.equipmentCache', in_array($cacheState, ['available', 'empty'], true) ? 'ok' : 'warn',
                 $cacheState . ': ' . $integrity['cache_slots'] . ' saved equipped appearances; '
-                . $integrity['cache_fallback'] . ' used as fallback',
-                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance — no item ID. Unique looks may be named; shared looks remain anonymous but visible until exact inventory is readable. Log out in-game to trigger a character save.');
+                . $integrity['cache_fallback'] . ' used as fallback, ' . (int) ($integrity['cache_named'] ?? 0) . ' identified from realm evidence',
+                '3.4.3 stores 34 slots × 5 values: inventory type, display ID, enchant visual, subclass, secondary appearance — no item ID. A cache-only look is identified from the saved type/subclass/class filters, an item_instance this character owns, or the realm\'s item_instance index; only looks with no supporting evidence stay anonymous. Log out in-game to trigger a character save.');
 
             $named = array_filter($equipment, static fn ($i) => (int) $i['entry'] > 0
                 && !in_array($i['source'], ['unresolved', 'appearance-identity'], true));
             $ambiguousLooks = array_filter($equipment, static fn ($i) => !empty($i['identity_ambiguous']));
+            $evidenceTiers = array_count_values(array_map(static fn ($i) => (string) ($i['identity_confidence'] ?? ''), $equipment));
+            $recovered = array_filter($evidenceTiers, static fn ($n, $tier) => $n > 0 && str_starts_with($tier, 'appearance-') && $tier !== 'appearance-only', ARRAY_FILTER_USE_BOTH);
             $sources = array_count_values(array_map(static fn ($i) => $i['source'], $equipment));
             $detail = $sample['name'] . ': ' . count($named) . '/' . count($equipment) . ' equipped item identities resolved; '
-                . count($ambiguousLooks) . ' shared cache look(s) intentionally anonymous';
+                . count($ambiguousLooks) . ' shared cache look(s) still anonymous';
+            if ($recovered) {
+                $detail .= ' (cache recovery: ' . implode(', ', array_map(
+                    static fn ($tier, $n) => "{$n} {$tier}",
+                    array_keys($recovered),
+                    $recovered
+                )) . ')';
+            }
             if ($sources) {
                 $detail .= ' (' . implode(', ', array_map(
                     static fn ($k, $v) => "{$v} via {$k}",

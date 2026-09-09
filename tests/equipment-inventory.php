@@ -54,9 +54,14 @@ $caches = [
     // generic same-model item, filtered by the character's class.
     21 => savedAppearanceCache([4 => [5, 63921, 0, 4, 0]]),
     22 => savedAppearanceCache([7 => [8, 64822, 0, 3, 0]]),
+    // Same shared feet look, later paired with an instance the character owns.
+    23 => savedAppearanceCache([7 => [8, 64822, 0, 3, 0]]),
+    // A shared cape look whose realm evidence lives on another character.
+    24 => savedAppearanceCache([14 => [16, 191780, 0, 1, 0]]),
 ];
 $pdo->exec("INSERT INTO characters (guid, account, name, class, level, online, deleteDate) VALUES
-    (21, 100, 'Cachepal', 2, 80, 0, NULL), (22, 100, 'Cachesham', 7, 80, 0, NULL)");
+    (21, 100, 'Cachepal', 2, 80, 0, NULL), (22, 100, 'Cachesham', 7, 80, 0, NULL),
+    (23, 100, 'Cachefoot', 7, 80, 0, NULL), (24, 100, 'Cachecape', 5, 80, 0, NULL)");
 $updateCache = $pdo->prepare('UPDATE characters SET equipmentCache = ? WHERE guid = ?');
 foreach ($caches as $guid => $cache) {
     $updateCache->execute([$cache, $guid]);
@@ -65,7 +70,8 @@ $pdo->exec('INSERT INTO item_instance (guid, itemEntry, owner_guid, count, durab
     (5000, 25, 1, 1, 20), (5001, 38, 1, 1, 0), (5100, 4496, 1, 1, 0),
     (5200, 117, 1, 4, 0), (5201, 118, 1, 2, 0), (5202, 36, 1, 1, 20),
     (5203, 37, 1, 1, 20), (5300, 35, 1, 1, 25), (5400, 4496, 1, 1, 0),
-    (5401, 36, 1, 1, 20), (6000, 25, 3, 1, 20), (8000, 999999999, 99, 1, 0)');
+    (5401, 36, 1, 1, 20), (6000, 25, 3, 1, 20), (8000, 999999999, 99, 1, 0),
+    (9003, 186047, 999, 1, 0)');
 // Character 1 uses spec 2. Its spec-specific primary/secondary appearances
 // must beat the deliberately different all-spec values.
 $pdo->exec('UPDATE characters SET activeTalentGroup = 1 WHERE guid = 1');
@@ -119,6 +125,25 @@ $shamanCache = getCharacterInventory($config, 22, 7);
 checkSame(0, $shamanCache['equipped'][7]['entry'], 'A shared cache-only feet look is not guessed as Returning Footfalls');
 checkSame(true, $shamanCache['equipped'][7]['identity_ambiguous'], 'Shared feet identity is explicit');
 checkSame(5, $shamanCache['equipped'][7]['lookalike_count'], 'All matching feet templates remain candidates');
+
+// Real realm evidence recovers a shared look instead of leaving it anonymous:
+// an item_instance this character still owns names its own lookalike...
+$pdo->exec('INSERT INTO item_instance (guid, itemEntry, owner_guid, count, durability) VALUES
+    (9002, 53127, 23, 1, 0)');
+$feetOwned = getCharacterInventory($config, 23, 7);
+checkSame(53127, $feetOwned['equipped'][7]['entry'], 'A shared look is named from an item_instance the character owns');
+checkSame('Returning Footfalls', $feetOwned['equipped'][7]['name'], 'The recovered slot shows the real item name');
+checkSame('appearance-character', $feetOwned['equipped'][7]['identity_confidence'], 'Character-owned recovery is labelled');
+checkSame(false, $feetOwned['equipped'][7]['identity_ambiguous'], 'A recovered shared look is no longer ambiguous');
+checkSame(5, $feetOwned['equipped'][7]['lookalike_count'], 'The full candidate set is still reported');
+checkSame(1, $feetOwned['integrity']['cache_named'], 'Recovery is counted for diagnostics');
+// ...and the only lookalike recorded anywhere on the realm wins its shared look.
+$capeRealm = getCharacterInventory($config, 24, 5);
+checkSame(186047, $capeRealm['equipped'][14]['entry'], 'The only lookalike recorded on the realm is named');
+checkSame('Communal Cape', $capeRealm['equipped'][14]['name'], 'Realm-unique recovery shows the real name');
+checkSame('appearance-realm-unique', $capeRealm['equipped'][14]['identity_confidence'], 'Realm-unique recovery is labelled');
+checkSame(false, $capeRealm['equipped'][14]['identity_ambiguous'], 'A realm-identified look is not flagged ambiguous');
+checkSame(1, $capeRealm['integrity']['cache_named'], 'Realm recovery is counted for diagnostics');
 
 $mixed = getCharacterInventory($config, 3);
 checkSame([15], array_keys($mixed['equipped']), 'Stale cache does not resurrect an unequipped head slot');

@@ -13,12 +13,15 @@
  * WyrmrestCore's characters.equipmentCache contains a visible display ID,
  * inventory type, enchant visual, visible subclass and a SECONDARY transmog
  * appearance. It does not contain the equipped itemEntry or the primary
- * modified appearance. Consequently a shared display cannot be reversed to an
- * exact item identity. The resolver returns an ID only when filtering by saved
- * type/subclass/class leaves one real candidate (or one explicit override).
- * Ambiguous cache slots keep their correct visual but do not receive invented
- * names, stats or Wowhead links. Exact identity always comes from
- * character_inventory -> item_instance.itemEntry.
+ * modified appearance, so a display shared by several valid templates cannot
+ * be reversed from the cache string alone. The resolver therefore weighs real
+ * realm evidence before giving up: the saved type/subclass/class filters, an
+ * item_instance owned by this very character, the realm's item_instance index,
+ * and explicit operator overrides (see itemAppearanceIdentityVerdict). A slot
+ * is left anonymous only when no evidence can defensibly name it; it never
+ * receives a purely invented identity. Exact identity always comes from
+ * character_inventory -> item_instance.itemEntry whenever those rows are
+ * readable.
  */
 function itemVisualCsvPath(array $config, string $table): ?string
 {
@@ -551,6 +554,125 @@ function realmInventoryItems(array $config): array
     return $memo[$memoKey] = $found;
 }
 
+/**
+ * Realm-wide item_instance index: itemEntry => instance count.
+ *
+ * A candidate item that exists as a real instance on this realm — equipped,
+ * bagged, banked, mailed, auctioned, or in a guild bank — is hard evidence
+ * the template is live here. That is what lets a shared saved appearance be
+ * identified even though characters.equipmentCache stores no item ID: after
+ * the saved subclass/inventory-type/class filters, exactly one candidate
+ * present in this index is a defensible identity, and among several present
+ * candidates the commonest is the best available match.
+ *
+ * The index is cached on disk for a few minutes (identical pattern to
+ * realmAppearanceLayer); a read-only cache dir simply re-queries per request.
+ */
+function realmItemInstanceIndex(array $config): array
+{
+    static $memo = [];
+    $memoKey = sha1(json_encode([
+        $config['db_host'] ?? '', $config['db_port'] ?? 0, $config['db_name'] ?? '',
+    ]));
+    if (isset($memo[$memoKey])) {
+        return $memo[$memoKey];
+    }
+
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        return $memo[$memoKey] = [];
+    }
+
+    $dir = itemCacheDir($config);
+    $cacheKey = substr(sha1(implode('|', [
+        $config['db_host'] ?? '', $config['db_port'] ?? 0, $config['db_name'] ?? '',
+    ])), 0, 12);
+    $cache = $dir . '/inventory-index-v1-' . $cacheKey . '.json';
+    if (is_file($cache) && (@filemtime($cache) + 300) > time()) {
+        $decoded = json_decode((string) @file_get_contents($cache), true);
+        if (is_array($decoded) && isset($decoded['items'], $decoded['total'])) {
+            $items = [];
+            foreach ($decoded['items'] as $entry => $count) {
+                $items[(int) $entry] = (int) $count;
+            }
+            return $memo[$memoKey] = $items;
+        }
+    }
+
+    try {
+        $stmt = $pdo->query('
+            SELECT itemEntry, COUNT(*) AS n
+            FROM item_instance
+            WHERE itemEntry > 0
+            GROUP BY itemEntry
+            ORDER BY itemEntry ASC
+        ');
+        $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    } catch (\Throwable $e) {
+        dbNoteError('index realm item instances', $e);
+        return $memo[$memoKey] = [];
+    }
+
+    $found = [];
+    $total = 0;
+    foreach ($rows as $row) {
+        $found[(int) $row['itemEntry']] = (int) $row['n'];
+        $total += (int) $row['n'];
+    }
+
+    if ((is_dir($dir) || @mkdir($dir, 0775, true)) && is_writable($dir)) {
+        $tmp = @tempnam($dir, 'inventory-index-');
+        if ($tmp) {
+            $json = json_encode(['items' => $found, 'total' => $total]);
+            if ($json !== false && @file_put_contents($tmp, $json) !== false && @rename($tmp, $cache)) {
+                @chmod($cache, 0664);
+                foreach (glob($dir . '/inventory-index-v*.json') ?: [] as $old) {
+                    if ($old !== $cache) {
+                        @unlink($old);
+                    }
+                }
+            } else {
+                @unlink($tmp);
+            }
+        }
+    }
+    return $memo[$memoKey] = $found;
+}
+
+/**
+ * itemEntry => instance count for every item instance this character owns,
+ * regardless of where it currently sits (equipped, bags, bank, mail...).
+ * When a cache-only slot must be identified, an instance of a candidate item
+ * owned by this very character is the strongest evidence there is.
+ */
+function characterOwnedItemInstances(array $config, int $guid): array
+{
+    if ($guid <= 0) {
+        return [];
+    }
+    $pdo = connectCharactersDb($config);
+    if (!$pdo) {
+        return [];
+    }
+    try {
+        $stmt = $pdo->prepare('
+            SELECT itemEntry, COUNT(*) AS n
+            FROM item_instance
+            WHERE owner_guid = :guid AND itemEntry > 0
+            GROUP BY itemEntry
+        ');
+        $stmt->execute(['guid' => $guid]);
+        $found = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $found[(int) $row['itemEntry']] = (int) $row['n'];
+        }
+        return $found;
+    } catch (\Throwable $e) {
+        dbNoteError('read character-owned item instances', $e);
+        return [];
+    }
+}
+
 /** Resolve an ItemModifiedAppearance ID to visual data, never to identity. */
 function itemModifiedAppearanceVisual(array $config, int $appearanceId): ?array
 {
@@ -659,17 +781,126 @@ function itemAppearanceCandidates(
 }
 
 /**
- * Resolve a cache-only appearance only when its item identity is defensible.
+ * Resolve a cache-only appearance to an identity using real realm evidence.
  *
- * WyrmrestCore does not save itemEntry in equipmentCache. Its fifth field is a
- * secondary shoulder/transmog appearance, not the primary item's modified
- * appearance, so it cannot identify the equipped item and is intentionally
- * ignored here. An explicit override may pin one realm-proven identity;
- * otherwise all filtered candidates must collapse to exactly one item.
+ * WyrmrestCore does not save itemEntry in equipmentCache, so a saved display
+ * can be shared by several valid templates. The saved subclass, inventory
+ * type and character class filter that set first (see itemAppearanceCandidates);
+ * what remains is decided by this ladder, strongest evidence first:
  *
- * Returns 0 for unknown, inconsistent, or shared appearances. The caller still
- * renders the saved display/icon, but does not attach somebody else's name,
- * stats, item level, or Wowhead link.
+ *   unique         exactly one candidate survives the filters (as before)
+ *   character      exactly one candidate has a real item_instance owned by
+ *                  this character — the same player's own records
+ *   realm-unique   exactly one candidate exists as any instance on the realm
+ *   realm-best     several exist: the best-supported one wins (instances the
+ *                  character owns, then realm instance count, then the
+ *                  override/junk/default ranking), with the runners-up kept
+ *                  as disclosed alternatives
+ *   '' (none)      no defensible identity; the slot stays visibly anonymous
+ *
+ * $candidates are rows from itemAppearanceCandidates; $ownedCounts and
+ * $realmCounts map itemEntry => instance count. Both evidence maps may be
+ * empty (no database configured), which reduces the verdict to the old
+ * unique-only decision.
+ *
+ * The cache's fifth field is a secondary shoulder/transmog appearance and
+ * still cannot identify the primary item; it is ignored, as before.
+ */
+function itemAppearanceIdentityVerdict(array $candidates, array $ownedCounts, array $realmCounts): array
+{
+    $verdict = [
+        'entry' => 0,
+        'confidence' => '',
+        'lookalike_count' => count($candidates),
+        'realm_supported' => 0,
+        'match_count' => 0,
+        'alternatives' => [],
+    ];
+    if (!$candidates) {
+        return $verdict;
+    }
+
+    // An explicit operator override pins the identity when exactly one is
+    // among the candidates; two conflicting overrides stay unresolved.
+    $preferred = array_values(array_filter($candidates, static fn (array $c): bool => !empty($c[3])));
+    if (count($preferred) === 1) {
+        $verdict['entry'] = (int) $preferred[0][0];
+        $verdict['confidence'] = 'unique';
+        $verdict['match_count'] = 1;
+        return $verdict;
+    }
+    if (count($preferred) > 1) {
+        return $verdict;
+    }
+    if (count($candidates) === 1) {
+        $verdict['entry'] = (int) $candidates[0][0];
+        $verdict['confidence'] = 'unique';
+        $verdict['match_count'] = 1;
+        return $verdict;
+    }
+
+    // Evidence the character itself provides: real instances it owns.
+    $owned = [];
+    $realm = [];
+    foreach ($candidates as $candidate) {
+        $entry = (int) $candidate[0];
+        if (($ownedCounts[$entry] ?? 0) > 0) {
+            $owned[$entry] = (int) $ownedCounts[$entry];
+        }
+        // An owned instance is itself present on the realm; the index only
+        // widens the view, so never let it undercount presence.
+        $presence = max((int) ($realmCounts[$entry] ?? 0), (int) ($ownedCounts[$entry] ?? 0));
+        if ($presence > 0) {
+            $realm[$entry] = $presence;
+        }
+    }
+    if (count($owned) === 1) {
+        $verdict['entry'] = (int) key($owned);
+        $verdict['confidence'] = 'character';
+        $verdict['match_count'] = 1;
+        return $verdict;
+    }
+
+    // Evidence the realm provides: real instances anywhere (any owner).
+    $verdict['realm_supported'] = count($realm);
+    if (count($realm) === 1) {
+        $verdict['entry'] = (int) key($realm);
+        $verdict['confidence'] = 'realm-unique';
+        $verdict['match_count'] = 1;
+        return $verdict;
+    }
+    if (count($realm) > 1) {
+        // Rank the supported candidates: the character's own instances first,
+        // then how common the item is on the realm, then the existing
+        // override/junk/appearance order as a deterministic tie-breaker.
+        $supported = array_values(array_filter($candidates, static fn (array $c): bool => isset($realm[(int) $c[0]])));
+        usort($supported, static function (array $a, array $b) use ($owned, $realm): int {
+            return [
+                $owned[(int) $b[0]] ?? 0, $realm[(int) $b[0]] ?? 0, (int) $b[3],
+                (int) $a[8], (int) $a[4], (int) $a[5], (int) $a[0],
+            ] <=> [
+                $owned[(int) $a[0]] ?? 0, $realm[(int) $a[0]] ?? 0, (int) $a[3],
+                (int) $b[8], (int) $b[4], (int) $b[5], (int) $b[0],
+            ];
+        });
+        $verdict['entry'] = (int) $supported[0][0];
+        $verdict['confidence'] = 'realm-best';
+        $verdict['match_count'] = $realm[$verdict['entry']];
+        $runners = array_slice($supported, 1, 3);
+        foreach ($runners as $runner) {
+            $entry = (int) $runner[0];
+            $verdict['alternatives'][] = ['entry' => $entry, 'count' => $realm[$entry]];
+        }
+    }
+    return $verdict;
+}
+
+/**
+ * Resolve a cache-only appearance to an item entry, or 0 when it stays
+ * anonymous. Realm-wide instance evidence participates (see
+ * itemAppearanceIdentityVerdict); the character-owned tier is used by
+ * cachedAppearanceItem, which knows the guid. Tests may inject counts via
+ * $context to run without a database.
  */
 function resolveItemFromAppearance(
     array $config,
@@ -677,22 +908,18 @@ function resolveItemFromAppearance(
     int $subclass = -1,
     int $inventoryType = -1,
     ?int $characterClass = null,
-    int $secondaryAppearanceId = 0
+    int $secondaryAppearanceId = 0,
+    array $context = []
 ): int {
     $candidates = itemAppearanceCandidates($config, $displayId, $subclass, $inventoryType, $characterClass);
     if (!$candidates) {
         return 0;
     }
-
-    // Overrides are explicit operator assertions based on a real realm entry.
-    $preferred = array_values(array_filter($candidates, static fn (array $candidate): bool => !empty($candidate[3])));
-    if (count($preferred) === 1) {
-        return (int) $preferred[0][0];
+    $realmCounts = $context['realm_counts'] ?? null;
+    if (!is_array($realmCounts)) {
+        $realmCounts = count($candidates) > 1 ? realmItemInstanceIndex($config) : [];
     }
-    if (count($preferred) > 1 || count($candidates) !== 1) {
-        return 0;
-    }
-    return (int) $candidates[0][0];
+    return itemAppearanceIdentityVerdict($candidates, [], $realmCounts)['entry'];
 }
 
 /** Number of plausible real identities left for a saved appearance. */
