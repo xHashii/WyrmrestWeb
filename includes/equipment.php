@@ -86,6 +86,9 @@ function unknownArmoryItem(int $entry): array
         'item_level' => 0,
         'required_level' => 0,
         'source' => 'unresolved',
+        'identity_confidence' => 'unavailable',
+        'identity_ambiguous' => false,
+        'lookalike_count' => 0,
         'display_id' => 0,
         'icon_file_data_id' => 0,
     ];
@@ -94,15 +97,12 @@ function unknownArmoryItem(int $entry): array
 /**
  * Turn one parsed equipmentCache slot into a displayable item.
  *
- * The cache only stores a look (display id) plus the equipped item's subclass
- * and inventory type — never the item id itself. We resolve that look back to
- * the item it belongs to and pull its real name/quality/item level from the
- * same DB2 export the rest of the Armory uses. A cached secondary appearance
- * (ItemModifiedAppearance id) resolves the item exactly; otherwise the
- * subclass + inventory type disambiguate, the character's class rejects items
- * it cannot wear, and curated realm overrides are preferred over generic
- * same-look items. When nothing matches, the slot still shows its saved icon
- * rather than vanishing.
+ * The cache stores a visible display plus type/subclass, never itemEntry. Its
+ * fifth value is a secondary transmog appearance and does not identify the
+ * primary item. We therefore attach item metadata only when the filtered
+ * appearance graph has one valid template (or one explicit realm override).
+ * Shared appearances remain visually correct but intentionally unnamed rather
+ * than borrowing another item's identity, stats, item level or Wowhead link.
  */
 function cachedAppearanceItem(array $config, int $slot, array $appearance, ?int $characterClass = null): array
 {
@@ -115,46 +115,115 @@ function cachedAppearanceItem(array $config, int $slot, array $appearance, ?int 
     $entry = resolveItemFromAppearance($config, $displayId, $subclass, $inventoryType, $characterClass, $secondaryAppearanceId);
     $realm = realmAppearanceLayer($config);
     $iconFromDisplay = (int) ($realm['displays'][$displayId] ?? $tables['displays'][$displayId] ?? 0);
+    $lookalikeCount = itemAppearanceCandidateCount($config, $displayId, $subclass, $inventoryType, $characterClass);
 
     $base = array_replace(unknownArmoryItem(0), $appearance, [
         'name' => equipSlotLabel($slot) . ' (saved appearance)',
-        'source' => 'appearance-cache',
+        'source' => $lookalikeCount > 1 ? 'appearance-ambiguous' : 'appearance-cache',
         'equipment_source' => 'equipment-cache',
+        'identity_confidence' => 'appearance-only',
+        'identity_ambiguous' => $lookalikeCount > 1,
         'icon_file_data_id' => $iconFromDisplay,
         'slot' => $slot,
         'bag' => 0,
         'item_guid' => null,
         'count' => 1,
         'durability' => null,
-        'lookalike_count' => itemAppearanceCandidateCount($config, $displayId),
+        'lookalike_count' => $lookalikeCount,
     ]);
 
     if ($entry > 0) {
         $resolved = resolveItems($config, [$entry])[$entry] ?? null;
-        if ($resolved !== null) {
-            $visual = itemVisuals($config, [$entry])[$entry] ?? [];
-            $base = array_replace($base, $resolved, [
-                // Keep the character's actual saved appearance/enchant fields.
-                'entry' => $entry,
-                'display_id' => $displayId ?: (int) ($visual['display_id'] ?? 0),
-                'icon_file_data_id' => (int) ($visual['icon_file_data_id'] ?? 0) ?: $iconFromDisplay,
-                'source' => 'appearance-resolved',
-                'equipment_source' => 'equipment-cache',
-                'enchant_visual' => $appearance['enchant_visual'] ?? 0,
-                'secondary_appearance_id' => $appearance['secondary_appearance_id'] ?? 0,
-                'slot' => $slot,
-                'bag' => 0,
-                'item_guid' => null,
-                'count' => 1,
-                'durability' => null,
-            ]);
-            if (empty($base['inventory_type'])) {
-                $base['inventory_type'] = $inventoryType > 0 ? $inventoryType : (int) ($visual['inventory_type'] ?? 0);
-            }
+        $hasMetadata = $resolved !== null;
+        $resolved ??= unknownArmoryItem($entry);
+        $visual = itemVisuals($config, [$entry])[$entry] ?? [];
+        $base = array_replace($base, $resolved, [
+            // Keep the character's actual saved appearance/enchant fields.
+            'entry' => $entry,
+            'display_id' => $displayId ?: (int) ($visual['display_id'] ?? 0),
+            'icon_file_data_id' => (int) ($visual['icon_file_data_id'] ?? 0) ?: $iconFromDisplay,
+            'source' => $hasMetadata ? 'appearance-resolved' : 'appearance-identity',
+            'equipment_source' => 'equipment-cache',
+            'identity_confidence' => 'appearance-unique',
+            'identity_ambiguous' => false,
+            'enchant_visual' => $appearance['enchant_visual'] ?? 0,
+            'secondary_appearance_id' => $appearance['secondary_appearance_id'] ?? 0,
+            'slot' => $slot,
+            'bag' => 0,
+            'item_guid' => null,
+            'count' => 1,
+            'durability' => null,
+        ]);
+        if (empty($base['inventory_type'])) {
+            $base['inventory_type'] = $inventoryType > 0 ? $inventoryType : (int) ($visual['inventory_type'] ?? 0);
         }
     }
 
     return $base;
+}
+
+/**
+ * Decorate one exact character_inventory/item_instance row. itemEntry owns
+ * identity; primary/secondary modified appearances can change visuals only.
+ * Arrays are pre-resolved by the caller to keep bulk inventory loads cheap.
+ */
+function decorateArmoryInventoryRow(array $config, array $row, array $items, array $visuals): array
+{
+    $entry = (int) ($row['itemEntry'] ?? 0);
+    $item = $items[$entry] ?? unknownArmoryItem($entry);
+    $visual = $visuals[$entry] ?? [];
+    $item['display_id'] = (int) ($visual['display_id'] ?? 0);
+    $item['icon_file_data_id'] = (int) ($visual['icon_file_data_id'] ?? 0);
+    if (empty($item['inventory_type'])) {
+        $item['inventory_type'] = (int) ($visual['inventory_type'] ?? 0);
+    }
+
+    $primaryAppearance = (int) ($row['primary_appearance_spec'] ?? 0);
+    if ($primaryAppearance <= 0) {
+        $primaryAppearance = (int) ($row['primary_appearance_all'] ?? 0);
+    }
+    if ($primaryAppearance > 0) {
+        $item['native_display_id'] = $item['display_id'];
+        $item['native_icon_file_data_id'] = $item['icon_file_data_id'];
+        $item['transmog_item_modified_appearance_id'] = $primaryAppearance;
+        $transmogVisual = itemModifiedAppearanceVisual($config, $primaryAppearance);
+        if ($transmogVisual !== null) {
+            $item['display_id'] = $transmogVisual['display_id'];
+            if ($transmogVisual['icon_file_data_id'] > 0) {
+                $item['icon_file_data_id'] = $transmogVisual['icon_file_data_id'];
+            }
+            $item['transmogrified'] = true;
+            $item['visual_source'] = 'primary-transmog';
+        } else {
+            $item['transmog_visual_unavailable'] = true;
+        }
+    }
+
+    $secondaryAppearance = (int) ($row['secondary_appearance_spec'] ?? 0);
+    if ($secondaryAppearance <= 0) {
+        $secondaryAppearance = (int) ($row['secondary_appearance_all'] ?? 0);
+    }
+    if ($secondaryAppearance > 0) {
+        $item['secondary_item_modified_appearance_id'] = $secondaryAppearance;
+        $secondaryVisual = itemModifiedAppearanceVisual($config, $secondaryAppearance);
+        if ($secondaryVisual !== null) {
+            $item['secondary_display_id'] = $secondaryVisual['display_id'];
+            $item['secondary_icon_file_data_id'] = $secondaryVisual['icon_file_data_id'];
+        }
+    }
+
+    $item['slot'] = (int) ($row['slot'] ?? 0);
+    $item['bag'] = (int) ($row['bag'] ?? 0);
+    $item['item_guid'] = (int) ($row['item_guid'] ?? 0);
+    $item['count'] = max(1, (int) ($row['count'] ?? 1));
+    $item['durability'] = ($row['durability'] ?? null) !== null ? (int) $row['durability'] : null;
+    $item['equipment_source'] = 'inventory';
+    // item_instance.itemEntry is authoritative even when descriptive metadata
+    // for a custom entry is unavailable.
+    $item['identity_confidence'] = $entry > 0 ? 'inventory-exact' : 'unavailable';
+    $item['identity_ambiguous'] = false;
+    $item['lookalike_count'] = 0;
+    return $item;
 }
 
 /** Paper-doll positions, matching the in-game character screen. */

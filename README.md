@@ -235,8 +235,10 @@ character.php           Character profile + equipment paper doll
 armory-model-asset.php  Fixed-origin, cached assets for the optional 3D viewer
 assets/character.*     Responsive profile styles, slot details and viewer controls
 includes/equipment.php  Saved-appearance parser and equipment layout/model helpers
-includes/item-visuals.php  Icons/display IDs from the bundled DB2 exports
+includes/item-visuals.php  Validated icons/displays and conservative appearance resolver
+tools/audit-item-appearances.php  Complete bundled + live equipped-ID coverage audit
 includes/wowhead.php      Item stat tooltips fetched from Wowhead and cached (cache/wowhead/)
+data/item-overrides.json  Optional verified realm-specific item assertions
 data/item-icon-names.json  FileDataID -> icon filename map
 images/items/          Small bundled icon set + optional locally extracted icons
 guild.php               Guild roster
@@ -330,40 +332,87 @@ So item entries are resolved in this order:
 To swap in a newer client export, drop the new
 `ItemSparse.<build>.csv` into `db2/`; the index rebuilds itself.
 
-**How a saved look becomes an item** — the equipmentCache only stores a
-display ID plus the item's subclass and inventory type, and many items share
-one model (the bundled export has ~13k looks, 5.5k of them shared). The
-resolver layers the signals it has, strongest first:
+**What can identify an item** — `character_inventory.item` joins to
+`item_instance.guid`; the resulting `item_instance.itemEntry` is the exact
+numeric item identity. Names and stats then resolve from hotfixes, an optional
+legacy world table, explicit overrides, or the bundled `ItemSparse` index in the
+order above. A custom ID remains visible as an occupied, exact-ID slot even when
+its descriptive metadata is not yet available.
 
-1. a saved *secondary appearance* (`ItemModifiedAppearance` id) — exact;
-2. subclass + inventory type + the character's class;
-3. curated realm overrides (`data/item-overrides.json`) — explicitly pinned;
-4. items someone is actually equipped with on the realm (learned from
-   readable inventory, refreshed every few minutes) — shared looks
-   auto-correct to what this realm really wears, without manual entries;
-5. ordinary items, with NPC-visual placeholders ("Monster - ...", "Test ...")
-   ranked last;
-6. items the exports omit entirely are still recovered from the appearance
-   graph, so they participate (display/icon) instead of vanishing.
+`characters.equipmentCache` is different: it contains a visible look, not an
+item ID. A cache-only look is assigned an identity only when all candidates
+remaining after its saved subclass, inventory type, and character-class filters
+collapse to one valid item. If two or more valid items share the look, the slot
+stays visible but anonymous; it receives no borrowed name, stats, item level,
+price, or Wowhead link and does not affect average item level. Candidate lists
+are never truncated before this decision (valid displays in this export have as
+many as 113 candidates).
 
-**Curated item overrides** (`data/item-overrides.json`) exist because the
-bundled export is a stock client snapshot: a realm can carry items it
-omits (for example the heroic-25 ICC block around entry 51625, which the
-3.4.3.54261 export leaves out even though `ItemModifiedAppearance`
-references it) or phase items that share a model with older ones. An
-override entry supplies the name, quality, item level, inventory type,
-subclass, display ID, icon FileDataID and allowable class, and makes the
-appearance resolver prefer that item for its look. Add or edit entries as
-needed; `config['item_overrides_path']` can point at a different file.
-When the realm's own `hotfixes.db2`-mirror tables (`item_modified_appearance`,
-`item_appearance`, `item_modified_appearance_extra`, `item`, `item_sparse`)
-are readable via `config['hotfixes_db_name']`, they are used ahead of the
-bundled export — that is how custom items are described by the server itself.
+The cache's fifth field is a **secondary** shoulder/transmog appearance. It is
+not the primary modified appearance and cannot identify the primary item.
+Likewise, candidate ordering, lower item ID, item level, or the frequency with
+which an item is worn elsewhere on the realm cannot prove identity. An explicit
+override may pin one identity only when the operator has independently verified
+that realm invariant.
 
-To find every look that still has to be guessed (and the items the export
-cannot name at all), run:
+**Template integrity and the bundled audit.** A stock ID is considered a real
+template only when it occurs in both `Item` and `ItemSparse`. For the bundled
+3.4.3.54261 export:
 
-    php tools/audit-item-appearances.php --limit=20
+- `Item`: 45,086 IDs;
+- `ItemSparse`: 45,070 IDs, all also present in `Item`;
+- authoritative intersection: 45,070 templates;
+- 16 Item-only IDs; and
+- 1,050 `ItemModifiedAppearance.ItemID` references outside that intersection.
+
+Those 1,050 references are dangling appearance-graph sources, **not 1,050
+missing items to synthesize**. Their modified appearances remain available as
+visual data for exact transmog rendering, but they never become cache identity
+candidates. Every modified-appearance row in this bundle does have its referenced
+`ItemAppearance` row. The valid graph contains 25,911 item/display pairs across
+13,213 displays. The audit also checks all 24,709 `ItemEffect` rows and every
+opposite-faction/crafting-reagent reference; like appearance edges, stale effect
+parents do not create item templates. All nonzero icons used by valid equippable
+templates have a bundled filename mapping; three test/monster items have no icon.
+
+This distinction fixes two previously unsafe defaults:
+
+- `51625` has no `Item`, no `ItemSparse`, no authoritative tooltip, and only a
+  dangling appearance reference. It is not shipped as an override and is never
+  mislabeled as Sanctified Lightsworn Chestguard. The real heroic item `51265`
+  remains available from bundled data.
+- `54577` (Returning Footfalls) is already a valid bundled item, but its display
+  is shared with four other valid items. A cache look alone cannot prove it is
+  `54577`; exact inventory can.
+
+**Explicit item overrides** (`data/item-overrides.json`) are for verified
+realm-specific templates or corrections. The default catalog is intentionally
+empty. Add an entry only after seeing that exact ID in
+`item_instance.itemEntry`, or after confirming matching realm `item` and
+`item_sparse` hotfix rows. Never derive a name or stats from
+`ItemModifiedAppearance.ItemID` alone. An override supplies name, quality, item
+level, inventory type, subclass, display ID, icon FileDataID, and allowable
+class; `config['item_overrides_path']` can point at another catalog. Realm
+appearance rows are subjected to the same Item + ItemSparse requirement before
+they can become identities.
+
+Run the complete audit after changing exports and against each live realm:
+
+```sh
+# Deterministic bundled-data report
+ARMORY_AUDIT_NO_DB=1 php tools/audit-item-appearances.php --limit=20 --junk
+
+# Complete machine-readable lists of every present/missing/referenced ID;
+# with normal database config this also checks every exact inventory itemEntry
+php tools/audit-item-appearances.php --json > item-coverage.json
+```
+
+The live section compares every distinct `item_instance.itemEntry` referenced
+by `character_inventory` (equipped, profession, bags, backpack, and bank) with
+bundled, hotfix, world, and override metadata and lists unresolved IDs. Only
+those exact observed IDs are candidates for new realm data; gather their
+authoritative client/server metadata before adding an override. The audit does
+not auto-suggest identities for shared displays.
 
 ### Equipped items versus cached appearances
 
@@ -383,30 +432,27 @@ core, `Player::SaveToDB` writes **34 slots × 5 unsigned integers**:
 inventoryType displayId enchantVisual subclass secondaryModifiedAppearanceId
 ```
 
-These are **appearance/display IDs, not item IDs** — but the display ID,
-subclass and inventory type together are enough to walk the client's
-appearance graph back to the item, exactly the way Wowhead's WotLK database
-does:
+Only the first 19 records are equipment. The parser rejects malformed or
+unsupported formats instead of mistaking displays, enchantments, secondary
+appearances, or bag records for item IDs.
 
-```
-displayId --ItemAppearance--> appearanceId --ItemModifiedAppearance--> itemId
-```
+A cache record always preserves its saved display and icon when that display is
+known. The Armory walks `ItemAppearance` and `ItemModifiedAppearance` only to
+build the set of valid templates sharing that display. It then applies the
+saved inventory type and subclass plus the character's class. Exactly one
+candidate may be named. Zero candidates stays an unknown saved appearance; two
+or more stays an explicitly ambiguous saved appearance. NPC/test placeholder
+rows are ignored when an ordinary valid template remains, but no popularity or
+ranking tie-breaker manufactures identity. Valid inventory records always win.
 
-Only the first 19 slots are equipment. The parser rejects malformed/unsupported
-formats instead of mistaking display IDs, enchantments or bag entries for item
-templates.
+For an inventory-backed item, the exact visible **primary transmog** comes from
+`item_instance_transmog`: the column for `characters.activeTalentGroup` is used
+first, then `itemModifiedAppearanceAllSpecs`, then the equipped item's native
+appearance, matching WyrmrestCore's `Item::GetDisplayId`. Secondary appearances
+are retained as separate visual data. Thus transmog changes the rendered look,
+never the equipped `itemEntry`, name, or stats. Older schemas lacking the
+optional transmog table still show the exact item with its native visual.
 
-A cache-only slot is resolved back to its item through the bundled DB2 export,
-the realm's hotfixes data and the curated overrides, so it shows the real name,
-rarity, item level and Wowhead link — and it contributes to the average item
-level like any other piece of gear. When several items share one look (a
-common transmog appearance), the resolver first uses a saved *secondary
-appearance* (an `ItemModifiedAppearance` id, which identifies the visible item
-exactly), then the subclass + inventory type, then the character's class
-(items the class cannot wear are rejected), then the curated overrides, then
-items observed equipped on this realm. The canonical match is shown only if
-still tied. If nothing shares the look, the slot still shows its saved icon
-rather than disappearing. Valid inventory records always win.
 Cached entries do not fill empty slots in an otherwise readable loadout; that
 would resurrect stale unequipped items. They can fill an occupied slot with a
 broken instance link, or an entirely unavailable equipped loadout.

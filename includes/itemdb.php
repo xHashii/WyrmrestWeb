@@ -77,36 +77,37 @@ function itemOverridesPath(array $config): string
 /**
  * Curated, server-specific item corrections (see data/item-overrides.json).
  *
- * The bundled db2/ CSVs are a generic client export; a realm can carry custom,
- * re-itemized or phase-specific items the export omits — for example the
- * heroic-25 ICC block around entry 51625, which ItemSparse.3.4.3.54261.csv
- * leaves out even though ItemModifiedAppearance references it. Entries here
- * fill those gaps, correct wrong rows, and tell the appearance resolver which
- * item a shared look belongs to on this realm. Returns entry => normalized row.
+ * The bundled db2/ CSVs are a stock client export; a realm can carry custom or
+ * re-itemized templates that it omits. Only add such a row after confirming the
+ * ID in item_instance.itemEntry or matching hotfixes.item + item_sparse rows.
+ * ItemModifiedAppearance references are not sufficient evidence because that
+ * graph contains dangling source IDs. Entries can fill proven gaps, correct
+ * rows, and explicitly pin one realm identity for a shared saved appearance.
+ * Returns entry => normalized row.
  */
 function itemOverrides(array $config): array
 {
-    static $memo = null;
-    if ($memo !== null) {
-        return $memo;
-    }
-
+    static $memo = [];
     $path = itemOverridesPath($config);
+    $cacheKey = $path . ':' . @filesize($path) . ':' . @filemtime($path);
+    if (isset($memo[$cacheKey])) {
+        return $memo[$cacheKey];
+    }
     if (!is_file($path)) {
-        return $memo = [];
+        return $memo[$cacheKey] = [];
     }
 
     $decoded = json_decode((string) @file_get_contents($path), true);
     if (!is_array($decoded) || !is_array($decoded['items'] ?? null)) {
-        return $memo = [];
+        return $memo[$cacheKey] = [];
     }
 
     $found = [];
-    foreach ($decoded['items'] as $key => $row) {
+    foreach ($decoded['items'] as $itemKey => $row) {
         if (!is_array($row)) {
             continue;
         }
-        $entry = (int) ($row['entry'] ?? $key);
+        $entry = (int) ($row['entry'] ?? $itemKey);
         $name = trim((string) ($row['name'] ?? ''));
         if ($entry <= 0 || $name === '') {
             continue;
@@ -127,7 +128,7 @@ function itemOverrides(array $config): array
     }
     ksort($found, SORT_NUMERIC);
 
-    return $memo = $found;
+    return $memo[$cacheKey] = $found;
 }
 
 /**
