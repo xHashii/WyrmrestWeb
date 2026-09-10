@@ -28,10 +28,14 @@ htdocs/                    (or wherever your web root is)
   leaderboard.php      Top Characters
   info.php             Realmlist, expansion, rates, Discord/support links
   armory.php           Armory: character/guild search
+  talents.php          WotLK 3.3.5 talent + glyph calculator
   armory-suggest.php   Armory: JSON type-ahead for the search box
   armory-diagnostics.php  Armory: database/data-source self-check
   character.php        Armory: character profile + equipment
   guild.php            Armory: guild roster
+  assets/
+    talent.css         Talent calculator styles
+    talent.js          Talent calculator interactions
   includes/
     bootstrap.php      Session start, config load, SOAP/DB helper functions
     itemdb.php         Item names/quality from the bundled DB2 export
@@ -40,12 +44,14 @@ htdocs/                    (or wherever your web root is)
     footer.php         Closes the page, site footer, copy-to-clipboard script
   data/
     zones.php          Zone ID -> name lookup for "Who's Online"
+    talent-calculator.json  WotLK talent tree, tooltip, and glyph data
   db2/
     ItemSparse.*.csv   3.4.3 client item export (item names/quality/ilvl)
   cache/
     items-*.idx/.dat   Generated item index (auto-rebuilt, safe to delete)
   images/
     class/, race/      Class/race icons (you provide these — see below)
+    talents/           Local WotLK tree backgrounds and sprite sheets
 ```
 
 Every page follows the same three-line pattern:
@@ -180,12 +186,16 @@ a copy button — on every page, since `header.php` is shared.
 
 ## Pages
 
-- **Home** (`index.php`) — hero + four cards linking to the other pages.
+- **Home** (`index.php`) — hero + quick links to the site's main pages.
 - **Register** (`register.php`) — the account creation form.
 - **Who's Online** (`online.php`) — live roster, 15 per page, paginated.
 - **Leaderboard** (`leaderboard.php`) — top 20 characters by level.
 - **Server Info** (`info.php`) — realmlist (with its own copy button),
   expansion, rates, Discord, and support link.
+- **Talent Calculator** (`talents.php`) — a browser-based WotLK 3.3.5 talent
+  and glyph planner with all ten classes, all three trees per class,
+  prerequisite arrows, tooltips, glyph selection, tree resets, and no
+  server-side or persistent saving.
 
 All pages collapse to a single column on narrow/mobile screens.
 
@@ -220,8 +230,8 @@ optional 3D preview), guild search, a guild roster page, and
 a diagnostics page that checks every database and file the Armory needs.
 
 **What's not included** (present in the original Node app, cut here to
-keep this a reasonable scope): talent trees, glyphs, achievements,
-PvP/arena ladder, and full transmog/character customization rendering. The
+keep this a reasonable scope): achievements, PvP/arena ladder, and full
+transmog/character customization rendering. The
 optional 3D viewer uses a base model for the race/body type, not an exact
 reconstruction of face, hair or other customization choices.
 

@@ -45,6 +45,11 @@ require __DIR__ . '/includes/header.php';
     <div class="cta-title">Leaderboard</div>
     <div class="cta-desc">Top characters ranked by level.</div>
   </a>
+  <a class="cta-card" href="talents.php">
+    <div class="cta-icon">✦</div>
+    <div class="cta-title">Talent Calculator</div>
+    <div class="cta-desc">Plan WotLK 3.3.5 talent builds and glyphs.</div>
+  </a>
   <a class="cta-card" href="info.php">
     <div class="cta-icon">ℹ</div>
     <div class="cta-title">Server Info</div>

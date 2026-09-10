@@ -2,7 +2,7 @@
 /**
  * Shared page header. The including page must set:
  *   $config     - already loaded by bootstrap.php
- *   $activePage - one of: home, register, online, leaderboard, info
+ *   $activePage - one of: home, register, online, leaderboard, armory, talents, info
  *   $pageTitle  - text shown in <title> (optional)
  */
 $status = getServerStatus($config);
@@ -13,6 +13,7 @@ $navItems = [
     'online'      => ['label' => "Who's Online", 'href' => 'online.php'],
     'leaderboard' => ['label' => 'Leaderboard',  'href' => 'leaderboard.php'],
     'armory'      => ['label' => 'Armory',       'href' => 'armory.php'],
+    'talents'     => ['label' => 'Talents',      'href' => 'talents.php'],
     'info'        => ['label' => 'Server Info',  'href' => 'info.php'],
 ];
 ?>
@@ -607,15 +608,8 @@ $navItems = [
 
   .cta-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 16px;
-  }
-
-  @media (max-width: 760px) {
-    .cta-grid { grid-template-columns: 1fr 1fr; }
-  }
-  @media (max-width: 480px) {
-    .cta-grid { grid-template-columns: 1fr; }
   }
 
   .cta-card {
