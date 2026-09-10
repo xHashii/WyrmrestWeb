@@ -19,9 +19,10 @@
     level: document.getElementById('talent-level'),
     glyphSummary: document.getElementById('talent-glyph-summary'),
     remaining: document.getElementById('talent-remaining-points'),
+    toolbar: document.getElementById('talent-toolbar'),
+    progressFill: document.getElementById('talent-progress-fill'),
     classPicker: document.getElementById('talent-class-picker'),
     status: document.getElementById('talent-status'),
-    summary: document.getElementById('talent-summary-grid'),
     trees: document.getElementById('talent-tree-grid-wrap'),
     majorGlyphs: document.getElementById('talent-major-glyphs'),
     minorGlyphs: document.getElementById('talent-minor-glyphs'),
@@ -45,13 +46,16 @@
     currentClassId: null,
     refundMode: false,
     dom: {
+      treePanels: [],
       treePoints: [],
-      treeFooters: [],
+      treeSubs: [],
       treeResetButtons: [],
       buttons: [],
       arrowPaths: [],
-      summaryCards: [],
       glyphSlots: { major: [], minor: [] }
+    },
+    toast: {
+      timer: null
     },
     picker: {
       open: false,
@@ -71,10 +75,13 @@
   init();
 
   async function init() {
-    setStatus('Loading talent and glyph data…');
-
     els.refundMode.addEventListener('click', toggleRefundMode);
-    els.resetBuild.addEventListener('click', resetBuild);
+    els.resetBuild.addEventListener('click', function () {
+      armConfirm(els.resetBuild, 'Confirm reset?', function () {
+        disarmConfirm(els.resetBuild);
+        resetBuild();
+      });
+    });
     els.clearGlyphs.addEventListener('click', clearGlyphs);
     els.pickerClose.addEventListener('click', closeGlyphPicker);
     els.pickerClear.addEventListener('click', clearPickerSlot);
@@ -85,9 +92,23 @@
       }
     });
 
+    els.status.addEventListener('mouseenter', pauseToast);
+    els.status.addEventListener('mouseleave', resumeToast);
+
     document.addEventListener('keydown', handleGlobalKeydown);
-    window.addEventListener('scroll', hideTooltip, { passive: true });
-    window.addEventListener('resize', hideTooltip);
+    window.addEventListener('scroll', function () {
+      hideTooltip();
+      updateStuckState();
+    }, { passive: true });
+    window.addEventListener('resize', function () {
+      hideTooltip();
+      updateStickyOffset();
+      updateStuckState();
+    });
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(updateStickyOffset);
+    }
+    updateStickyOffset();
 
     try {
       const response = await fetch(dataUrl, { credentials: 'same-origin' });
@@ -106,11 +127,10 @@
       }
 
       selectClass(selected, false);
-      setStatus(defaultStatus());
+      hideToast();
     } catch (error) {
       console.error(error);
       els.classPicker.innerHTML = '';
-      els.summary.innerHTML = '';
       els.trees.innerHTML = '<div class="panel talent-loading">The talent calculator could not be loaded.</div>';
       els.majorGlyphs.innerHTML = '';
       els.minorGlyphs.innerHTML = '';
@@ -238,8 +258,6 @@
       url.searchParams.set('class', classId);
       history.replaceState(null, '', url.toString());
     }
-
-    setStatus(defaultStatus());
   }
 
   function renderCurrentClass() {
@@ -249,57 +267,26 @@
     }
 
     els.classTitle.textContent = cls.name;
-    els.summary.innerHTML = '';
     els.trees.innerHTML = '';
     els.majorGlyphs.innerHTML = '';
     els.minorGlyphs.innerHTML = '';
 
     state.dom = {
+      treePanels: [],
       treePoints: [],
-      treeFooters: [],
+      treeSubs: [],
       treeResetButtons: [],
       buttons: [],
       arrowPaths: [],
-      summaryCards: [],
       glyphSlots: { major: [], minor: [] }
     };
 
     cls.trees.forEach(function (tree, treeIndex) {
-      renderSummaryCard(tree, treeIndex);
       renderTree(tree, treeIndex);
     });
 
     renderGlyphSlots();
     refresh();
-  }
-
-  function renderSummaryCard(tree, treeIndex) {
-    const card = document.createElement('div');
-    card.className = 'talent-summary-card';
-
-    const top = document.createElement('div');
-    top.className = 'talent-summary-top';
-
-    const name = document.createElement('div');
-    name.className = 'talent-summary-name';
-    name.textContent = tree.name;
-
-    const points = document.createElement('div');
-    points.className = 'talent-summary-points';
-    points.textContent = '0';
-
-    top.appendChild(name);
-    top.appendChild(points);
-
-    const meta = document.createElement('div');
-    meta.className = 'talent-summary-meta';
-    meta.textContent = 'No points spent yet.';
-
-    card.appendChild(top);
-    card.appendChild(meta);
-    els.summary.appendChild(card);
-
-    state.dom.summaryCards[treeIndex] = { card: card, points: points, meta: meta };
   }
 
   function renderTree(tree, treeIndex) {
@@ -314,33 +301,40 @@
     treeName.className = 'talent-tree-name';
     treeName.textContent = tree.name;
 
+    const flag = document.createElement('span');
+    flag.className = 'talent-tree-flag';
+    flag.textContent = 'Main spec';
+
     const treeSubtitle = document.createElement('div');
-    treeSubtitle.className = 'talent-tree-subtitle';
-    treeSubtitle.textContent = 'Spend points from the top down. Prerequisite talents must be fully trained first.';
+    treeSubtitle.className = 'talent-tree-sub';
 
     headLeft.appendChild(treeName);
+    headLeft.appendChild(flag);
     headLeft.appendChild(treeSubtitle);
 
-    const headRight = document.createElement('div');
-    headRight.style.textAlign = 'right';
+    const side = document.createElement('div');
+    side.className = 'talent-tree-side';
 
     const points = document.createElement('div');
     points.className = 'talent-tree-points';
-    points.innerHTML = '0<span>points in tree</span>';
+    points.innerHTML = '0<span>pts</span>';
 
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.className = 'talent-action-btn';
     reset.textContent = 'Reset Tree';
     reset.addEventListener('click', function () {
-      resetTree(treeIndex);
+      armConfirm(reset, 'Confirm?', function () {
+        disarmConfirm(reset);
+        resetTree(treeIndex);
+      });
     });
 
-    headRight.appendChild(points);
-    headRight.appendChild(reset);
+    side.appendChild(points);
+    side.appendChild(reset);
 
     head.appendChild(headLeft);
-    head.appendChild(headRight);
+    head.appendChild(side);
     panel.appendChild(head);
 
     const stage = document.createElement('div');
@@ -371,7 +365,6 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'talent-talent is-locked';
-      button.setAttribute('aria-describedby', 'talent-status');
 
       const sprite = document.createElement('span');
       sprite.className = 'talent-sprite';
@@ -421,14 +414,11 @@
     stage.appendChild(grid);
     panel.appendChild(stage);
 
-    const footer = document.createElement('div');
-    footer.className = 'talent-tree-foot';
-    panel.appendChild(footer);
-
     els.trees.appendChild(panel);
 
+    state.dom.treePanels[treeIndex] = panel;
     state.dom.treePoints[treeIndex] = points;
-    state.dom.treeFooters[treeIndex] = footer;
+    state.dom.treeSubs[treeIndex] = treeSubtitle;
     state.dom.treeResetButtons[treeIndex] = reset;
     state.dom.buttons[treeIndex] = buttons;
     state.dom.arrowPaths[treeIndex] = arrowLayer.paths;
@@ -603,37 +593,45 @@
 
     els.totalPoints.textContent = String(total);
     els.level.textContent = String(level);
-    els.glyphSummary.textContent = (unlockedGlyphCount * 2) + '/6 glyph slots unlocked';
+    els.glyphSummary.textContent = (unlockedGlyphCount * 2) + '/6 glyphs';
     els.remaining.textContent = total >= MAX_POINTS
-      ? 'All 71 points allocated'
-      : (MAX_POINTS - total) + ' point' + (MAX_POINTS - total === 1 ? '' : 's') + ' remaining';
+      ? 'All points spent'
+      : (MAX_POINTS - total) + ' left';
+    if (els.progressFill) {
+      els.progressFill.style.width = Math.min(100, (total / MAX_POINTS) * 100) + '%';
+    }
     els.refundMode.textContent = state.refundMode ? 'Refund Mode' : 'Spend Mode';
     els.refundMode.setAttribute('aria-pressed', state.refundMode ? 'true' : 'false');
     els.refundMode.classList.toggle('is-toggled', state.refundMode);
+    root.classList.toggle('is-refund-mode', state.refundMode);
     els.resetBuild.disabled = total === 0 && selectedGlyphCount === 0;
+    if (els.resetBuild.disabled) {
+      disarmConfirm(els.resetBuild);
+    }
     els.clearGlyphs.disabled = selectedGlyphCount === 0;
 
     cls.trees.forEach(function (tree, treeIndex) {
       const treeTotal = treePoints(treeIndex);
       const buttons = state.dom.buttons[treeIndex] || [];
       const pointLabel = state.dom.treePoints[treeIndex];
-      const footer = state.dom.treeFooters[treeIndex];
+      const sub = state.dom.treeSubs[treeIndex];
+      const panel = state.dom.treePanels[treeIndex];
       const reset = state.dom.treeResetButtons[treeIndex];
-      const summary = state.dom.summaryCards[treeIndex];
 
       if (pointLabel) {
-        pointLabel.innerHTML = String(treeTotal) + '<span>points in tree</span>';
+        pointLabel.innerHTML = String(treeTotal) + '<span>pts</span>';
       }
       if (reset) {
         reset.disabled = treeTotal === 0;
+        if (reset.disabled) {
+          disarmConfirm(reset);
+        }
       }
-      if (summary) {
-        summary.card.classList.toggle('is-primary', treeIndex === primaryTree && treeTotal > 0);
-        summary.points.textContent = String(treeTotal);
-        summary.meta.textContent = treeSummaryText(treeIndex, tree.name);
+      if (panel) {
+        panel.classList.toggle('is-primary', treeIndex === primaryTree && treeTotal > 0);
       }
-      if (footer) {
-        footer.innerHTML = '<strong>Tree progress:</strong> ' + escapeHtml(treeFooterText(treeIndex));
+      if (sub) {
+        sub.textContent = treeFooterText(treeIndex);
       }
 
       tree.talents.forEach(function (talent, talentIndex) {
@@ -649,6 +647,7 @@
         refs.button.classList.toggle('is-active', active);
         refs.button.classList.toggle('is-locked', !active);
         refs.button.classList.toggle('is-maxed', maxed);
+        refs.button.classList.toggle('is-spent', rank > 0);
         refs.badge.textContent = rank + '/' + talent.maxRank;
         refs.sprite.style.backgroundPosition = (-talent.icon * ICON_SIZE) + 'px ' + (active ? '0px' : (-ICON_SIZE) + 'px');
         refs.button.setAttribute('aria-label', talent.name + ', ' + rank + ' of ' + talent.maxRank + ' points');
@@ -697,9 +696,10 @@
           refs.fallback.hidden = true;
           refs.title.textContent = glyph.displayName;
           refs.subtitle.textContent = unlocked
-            ? slotLabel + ' selected. Click to change it.'
-            : slotLabel + ' selected, but this slot stays locked until level ' + unlockLevel + '.';
+            ? glyph.description
+            : 'Selected — slot unlocks at level ' + unlockLevel + '.';
           refs.badge.textContent = unlocked ? 'Selected' : 'Locked';
+          refs.subtitle.title = glyph.description;
           refs.button.setAttribute('aria-label', slotLabel + ': ' + glyph.name);
         } else {
           refs.icon.hidden = true;
@@ -708,6 +708,7 @@
           refs.subtitle.textContent = unlocked
             ? 'Click to choose a ' + type + ' glyph.'
             : 'Unlocks at level ' + unlockLevel + '.';
+          refs.subtitle.title = '';
           refs.badge.textContent = unlocked ? 'Empty' : 'Level ' + unlockLevel;
           refs.button.setAttribute('aria-label', unlocked
             ? 'Empty ' + slotLabel + '. Click to choose a glyph.'
@@ -1211,25 +1212,12 @@
     els.tooltip.style.top = Math.max(margin, top) + 'px';
   }
 
-  function defaultStatus() {
-    const total = totalPoints();
-    const glyphs = selectedGlyphsCount();
-
-    if (state.refundMode) {
-      return 'Refund mode is on. Click a spent talent to remove a point. Glyphs are selected separately and are not saved.';
-    }
-    if (total === 0 && glyphs === 0) {
-      return 'Click a talent to spend a point. Right-click, Shift-click, or use Refund Mode to remove one. Glyphs unlock at levels 15, 30, and 50.';
-    }
-    if (total >= MAX_POINTS) {
-      return 'All 71 talent points are allocated. Right-click, Shift-click, or use Refund Mode to make changes.';
-    }
-
-    const remaining = MAX_POINTS - total;
-    return remaining + ' point' + (remaining === 1 ? '' : 's') + ' remaining. Glyph slots unlock in pairs at levels 15, 30, and 50.';
-  }
-
   function setStatus(message, tone) {
+    if (!message) {
+      hideToast();
+      return;
+    }
+
     els.status.textContent = message;
     els.status.classList.remove('is-error', 'is-success');
     if (tone === 'error') {
@@ -1237,6 +1225,88 @@
     } else if (tone === 'success') {
       els.status.classList.add('is-success');
     }
+
+    els.status.classList.add('is-visible');
+    clearToastTimers();
+    state.toast.timer = window.setTimeout(hideToast, tone === 'error' ? 4200 : 2000);
+  }
+
+  function hideToast() {
+    clearToastTimers();
+    els.status.classList.remove('is-visible');
+  }
+
+  function pauseToast() {
+    if (state.toast.timer !== null) {
+      window.clearTimeout(state.toast.timer);
+      state.toast.timer = null;
+    }
+  }
+
+  function resumeToast() {
+    if (els.status.classList.contains('is-visible') && state.toast.timer === null) {
+      state.toast.timer = window.setTimeout(hideToast, 1600);
+    }
+  }
+
+  function clearToastTimers() {
+    if (state.toast.timer !== null) {
+      window.clearTimeout(state.toast.timer);
+      state.toast.timer = null;
+    }
+  }
+
+  /* Two-step confirm for destructive resets: the first click arms the button
+     and the second click within a few seconds actually resets. */
+  const armedButtons = new WeakMap();
+
+  function armConfirm(button, confirmLabel, action) {
+    if (armedButtons.has(button)) {
+      action();
+      return;
+    }
+
+    const previousLabel = button.textContent;
+    button.textContent = confirmLabel;
+    button.classList.add('is-armed');
+
+    const timer = window.setTimeout(function () {
+      disarmConfirm(button, previousLabel);
+    }, 3000);
+    armedButtons.set(button, { label: previousLabel, timer: timer });
+  }
+
+  function disarmConfirm(button, restoreLabel) {
+    const armed = armedButtons.get(button);
+    if (!armed) {
+      return;
+    }
+
+    window.clearTimeout(armed.timer);
+    armedButtons.delete(button);
+    if (restoreLabel !== false) {
+      button.textContent = armed.label;
+    }
+    button.classList.remove('is-armed');
+  }
+
+  /* The toolbar sticks just below the site navbar; the navbar can wrap to
+     multiple rows, so measure its height instead of hardcoding an offset. */
+  function updateStickyOffset() {
+    const navbar = document.querySelector('.navbar');
+    const top = (navbar ? navbar.offsetHeight : 0) + 8;
+    root.style.setProperty('--talent-sticky-top', top + 'px');
+    updateStuckState();
+  }
+
+  function updateStuckState() {
+    if (!els.toolbar) {
+      return;
+    }
+
+    const stickyTop = parseFloat(getComputedStyle(root).getPropertyValue('--talent-sticky-top')) || 0;
+    const stuck = els.toolbar.getBoundingClientRect().top <= stickyTop + 1;
+    els.toolbar.classList.toggle('is-stuck', stuck);
   }
 
   function currentClass() {
@@ -1323,24 +1393,6 @@
 
     const remaining = Math.max(0, nextRequirement - spent);
     return 'Tier ' + currentTier + ' unlocked. ' + remaining + ' more point' + (remaining === 1 ? '' : 's') + ' opens the next tier.';
-  }
-
-  function treeSummaryText(treeIndex, treeName) {
-    const spent = treePoints(treeIndex);
-    if (spent === 0) {
-      return 'No points in ' + treeName + ' yet.';
-    }
-
-    const filled = currentBuild()[treeIndex].filter(function (rank) {
-      return rank > 0;
-    }).length;
-    const nextUnlock = Math.min(50, (Math.floor(spent / 5) + 1) * 5);
-
-    if (spent >= 50) {
-      return filled + ' talent' + (filled === 1 ? '' : 's') + ' invested. Final tier unlocked.';
-    }
-
-    return filled + ' talent' + (filled === 1 ? '' : 's') + ' invested. ' + (nextUnlock - spent) + ' point' + ((nextUnlock - spent) === 1 ? '' : 's') + ' to the next tier.';
   }
 
   function unlockedGlyphSlots(level) {
